@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html>
+ 
+    <head>
+        <script src="src/jquery-3.3.1.min.js"></script>
+        <link rel="stylesheet" type="text/css" href="src/bootstrap.min.css">
+        <link rel="stylesheet" type="text/css" href="src/style.css">
+    </head>
+ 
+    <body class="container">
+            <ul class="nav justify-content-center">
+                <li class="nav-item">
+                <a class="nav-link" href="/">Dashboard</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link disabled" tabindex="-1" aria-disabled="true" href="schedule">Schedule</a>
+                </li>
+                <li class="nav-item">
+                <a class="nav-link" href="manual">Manual</a>
+                </li>
+                <li class="nav-item">
+                <a class="nav-link" href="config">Config</a>
+                </li>
+            </ul>
+                <div id="content"  class="container justify-content-center pt-5">
+                <p>Lights</p>
+                <ul class="container" %LightSchedule%>
+                    <div class="generated-form">
+
+                    </div>
+                    <div class="d-flex justify-content-end pt-3">
+                        <button type="submit" class="btn btn-primary submit-btn" formNum="0" disabled>Save</button>
+                    </div>
+                </ul>
+                <p>CO2 injection</p>
+                <ul class="container" %CO2Schedule%>
+                    <div class="generated-form">
+
+                    </div>
+                    <div class="d-flex justify-content-end pt-3">
+                        <button type="submit" class="btn btn-primary submit-btn" formNum="1" disabled>Save</button>
+                    </div>
+                </ul>
+                <p>Water change</p>
+                <ul class="container" %WaterSchedule%>
+                    <div class="generated-form">
+
+                    </div>
+                    <div class="d-flex justify-content-end pt-3">
+                        <button type="submit" class="btn btn-primary submit-btn" formNum="2" disabled>Save</button>
+                    </div>
+                </ul>
+                <p>Dosing Pump 1</p>
+                <ul class="container" %Pump1Schedule%>
+                    <div class="generated-form">
+
+                    </div>
+                    <div class="d-flex justify-content-end pt-3">
+                        <button type="submit" class="btn btn-primary submit-btn" formNum="3" disabled>Save</button>
+                    </div>
+                </ul>
+                <p>Dosing Pump 2</p>
+                <ul class="container" %Pump2Schedule%>
+                    <div class="generated-form">
+
+                    </div>
+                    <div class="d-flex justify-content-end pt-3">
+                        <button type="submit" class="btn btn-primary submit-btn" formNum="4" disabled>Save</button>
+                    </div>
+                </ul>
+                <p>Dosing Pump 3</p>
+                <ul class="container" %Pump3Schedule%>
+                    <div class="generated-form">
+
+                    </div>
+                    <div class="d-flex justify-content-end pt-3">
+                        <button type="submit" class="btn btn-primary submit-btn" formNum="5" disabled>Save</button>
+                    </div>
+                </ul>
+            </div>
+            
+    </body>
+    <script>
+        $(document).on('click','.day',(function(event){
+            $(event.target).toggleClass("btn-light").toggleClass("btn-primary");
+            $(event.target).closest("ul").find(".submit-btn").removeAttr("disabled");
+        }));
+        $(document).on('change', '.custom-select',(function(event){
+            let selectedField = $(event.target).closest("select");
+
+            selectedField.attr("value",$(event.target).val());
+            $(event.target).closest("ul").find(".submit-btn").removeAttr("disabled");
+            if (selectedField.hasClass("status")){
+                if ($(event.target).attr("value") == '0') selectedField.next().hide();
+                if ($(event.target).attr("value") == '1') selectedField.next().show();
+            }
+               
+        }));
+        
+        // Submit button
+        $(".submit-btn").click(function(event){
+            // Get forum number
+            const formNum = $(event.target).attr("formNum");
+            
+            // Get dropdown fields values
+            let status, startHour, startMin, endHour, endMin, dosage ='';
+            $(event.target).closest("ul").find("select").each(function(){
+                if($(this).hasClass("status")) status=$(this).attr("value");
+                if($(this).hasClass("startHour")) startHour=$(this).attr("value");
+                if($(this).hasClass("startMin")) startMin=$(this).attr("value");
+                if($(this).hasClass("endHour")) endHour=$(this).attr("value");
+                if($(this).hasClass("endMin")) endMin=$(this).attr("value");
+                if($(this).hasClass("dosage")) dosage=$(this).attr("value");
+            })
+
+            // Get schedule
+            let schedule = '';
+            $(event.target).closest("ul").find(".day").each(function(){
+                if($(this).hasClass("btn-primary"))
+                    schedule = schedule + '1';
+                else
+                schedule = schedule + '0';
+            });
+
+            // build query
+            let query = 'formNum=' + formNum;
+            if (status) query = query+'&status='+status;
+            if (startHour) query = query+ '&startHour='+startHour;
+            if (startMin) query = query+'&startMin='+startMin ;
+            if (endHour) query = query+'&endHour='+endHour;
+            if (endMin) query = query+'&endMin='+endMin;
+            if (dosage) query = query+'&dosage='+dosage;
+            if (schedule) query = query+'&schedule='+schedule;
+
+            fetch('/form',{
+                method:'post',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+                body: query,
+                })
+            $(event.target).attr("disabled","true");
+        })
+        
+        // load dynamic component
+        $(document).ready(function(){
+            // create hour select fields first
+            let hourSelect = $("<select class='custom-select my-1 mr-sm-2'></select>");
+            for(let i=0;i<24;i++){
+                hourSelect.append("<option class='drop' value="+ i.toString() +">"+ (i<10? '0'+i.toString():i.toString()) +"</option>");
+            }
+            let minSelect = $("<select class='custom-select my-1 mr-sm-2'></select>");
+            for(let i=0;i<60;i++){
+                minSelect.append("<option class='drop' value="+ i.toString() +">"+ (i<10? '0'+i.toString():i.toString()) +"</option>");
+            }
+
+            // Generate the input with the variables
+            $(this).find("ul").each(function(){
+                const editAdd =  $(this).find(".generated-form");
+                // generate status
+                if($(this).attr("status")){
+                    editAdd.append(" <label class='my-1 mr-2' >Satus</label>");
+                    let newSelect = $("<select class='custom-select my-1 mr-sm-2 status'> </select>");
+                    newSelect.append("<option class='drop' value='0' "+ ($(this).attr("status") == '0'? "selected": "") +">Disabled </option>");
+                    newSelect.append("<option class='drop' value='1' "+ ($(this).attr("status") == '1'? "selected": "") +">Enabled </option>");
+                    editAdd.append(newSelect);
+                }
+
+                let fieldcontainer = $("<div></div>");
+                if ($(this).attr("status")=='0') fieldcontainer.hide();
+                // generate start hour
+                if($(this).attr("startHour") && $(this).attr("startMin")){
+                    fieldcontainer.append("<label class='my-1 mr-2' >Trigger time</label>");
+                    const selectedHour = $(this).attr("startHour");
+                    const selectedMin = $(this).attr("startMin");
+
+                    let startHourSelect = hourSelect.clone().addClass("startHour");
+                    startHourSelect.find("option").each(function(){
+                        if ($(this).attr('value') == selectedHour) $(this).attr("selected","true");
+                    })
+                    let startMinSelect = minSelect.clone().addClass("startMin");
+                    startMinSelect.find("option").each(function(){
+                        if ($(this).attr('value') == selectedMin) $(this).attr("selected","true");
+                    })
+
+                    // Append the set
+                    let startTimeSelect = $("<div class='form-row'></div>");
+                    $("<div class='col'></div>").append(startHourSelect).appendTo(startTimeSelect);
+                    $("<div class='col'></div>").append(startMinSelect).appendTo(startTimeSelect);
+                    fieldcontainer.append(startTimeSelect);
+                }
+
+                // generate end hour
+                if($(this).attr("endHour") && $(this).attr("endMin")){
+                    fieldcontainer.append("<label class='my-1 mr-2' >Stop time</label>");
+                    const selectedHour = $(this).attr("endHour");
+                    const selectedMin = $(this).attr("endMin");
+
+                    let endHourSelect = hourSelect.clone().addClass("endHour");
+                    endHourSelect.find("option").each(function(){
+                        if ($(this).attr('value') == selectedHour) $(this).attr("selected","true");
+                    })
+                    let endMinSelect = minSelect.clone().addClass("endMin");
+                    endMinSelect.find("option").each(function(){
+                        if ($(this).attr('value') == selectedMin) $(this).attr("selected","true");
+                    })
+
+                    // Append the set
+                    let endTimeSelect = $("<div class='form-row'></div>");
+                    $("<div class='col'></div>").append(endHourSelect).appendTo(endTimeSelect);
+                    $("<div class='col'></div>").append(endMinSelect).appendTo(endTimeSelect);
+                    fieldcontainer.append(endTimeSelect);
+                }
+
+                // Generate dosage
+                if($(this).attr("dosage")){ 
+                    fieldcontainer.append("<label class='my-1 mr-2' >Dosage</label>");
+                    // const ammount = $(this).attr("dosage").parseInt();
+                    let newSelect = $("<select class='custom-select my-1 mr-sm-2 dosage'> </select>");
+                    for(let i = 0;i<21;i++){
+                        newSelect.append("<option class='drop' value='"+ i.toString() +"'' "+ ($(this).attr("dosage")==i.toString()? "selected" :"") +">"+i.toString()+" ml</option>");
+                    }
+                    fieldcontainer.append(newSelect);
+                }
+
+                // Generate schedule buttons
+                if($(this).attr("schedule")){
+                    fieldcontainer.append("<label class='my-1 mr-2' >Schedule</label>");
+                    const schedule = $(this).attr("schedule");
+                    let scheduleGroup = $("<div class='btn-group my-1 mr-sm-2' role='group' aria-label='Schedule'></div>");
+                    scheduleGroup.append("<button type='button' class='btn "+(schedule[0] == '1'?"btn-primary":"btn-light")+" day'>Mon</button>");
+                    scheduleGroup.append("<button type='button' class='btn "+(schedule[1] == '1'?"btn-primary":"btn-light")+" day'>Tue</button>");
+                    scheduleGroup.append("<button type='button' class='btn "+(schedule[2] == '1'?"btn-primary":"btn-light")+" day'>Wed</button>");
+                    scheduleGroup.append("<button type='button' class='btn "+(schedule[3] == '1'?"btn-primary":"btn-light")+" day'>Thu</button>");
+                    scheduleGroup.append("<button type='button' class='btn "+(schedule[4] == '1'?"btn-primary":"btn-light")+" day'>Fri</button>");
+                    scheduleGroup.append("<button type='button' class='btn "+(schedule[5] == '1'?"btn-primary":"btn-light")+" day'>Sat</button>");
+                    scheduleGroup.append("<button type='button' class='btn "+(schedule[6] == '1'?"btn-primary":"btn-light")+" day'>Sun</button>");
+                    fieldcontainer.append(scheduleGroup);
+                }
+                editAdd.append(fieldcontainer);
+            })
+        })
+       </script>
+ 
+</html>
