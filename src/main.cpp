@@ -8,6 +8,15 @@
 #include <mutex>
 #include <ESP32Ping.h>
 
+// Configs data, stored a separated JSON in /data
+const char* wifi_ssid;
+const char* wifi_password;
+const char* ap_ssid;
+const char* ap_password;
+int timezone;
+float phOffset;
+float dechlorinatorDose;
+float secondPerMl;
 
 // Flags
 bool scheduleChange = false;
@@ -65,7 +74,7 @@ void scheduleManager(void *parameter){
   }
 }
 
-String readConfig(String field){
+void readConfig(){
   File openfile = SPIFFS.open(configPath, "r"); 
   DynamicJsonDocument doc(1024);
   DeserializationError err = deserializeJson(doc, openfile);
@@ -74,8 +83,14 @@ String readConfig(String field){
     Serial.println(err.f_str());
   }
   openfile.close();
-  return doc[field].as<const char* >();
-
+  wifi_ssid = doc["wifi_ssid"].as<const char* >();
+  wifi_password =  doc["wifi_password"].as<const char* >();
+  ap_ssid = doc["ap_ssid"].as<const char* >();
+  ap_password = doc["ap_password"].as<const char* >();
+  timezone = doc["timezone"].as<int >();
+  phOffset = doc["phOffset"].as<float>();
+  dechlorinatorDose = doc["dechlorinatorDose"].as<float>();
+  secondPerMl =  doc["dechlorinatorDose"].as<float>();
 }
 
 // =======================================Web Processors=======================================
@@ -130,6 +145,25 @@ String scheduleLoader(const String& var){
   return String();
 }
 
+// Config values
+String configLoader(const String& var){
+  // Wait for 5 seconds to get Mutex. If for some reason it's not avaliable, the website will be empty, shouldn't be a big deal
+  if (xSemaphoreTake(configMutex,5000/portTICK_RATE_MS)==pdTRUE){
+    // Read config config in SPIFFS
+    File openfile = SPIFFS.open(configPath, "r"); 
+    DynamicJsonDocument doc(1024);
+    DeserializationError err = deserializeJson(doc, openfile);
+    if (err) {
+      Serial.print(F("deserializeJson() failed with code "));
+      Serial.println(err.f_str());
+    }
+    openfile.close();
+    xSemaphoreGive(configMutex);
+    return (doc[var].as<const char* >());
+  }
+  return String();
+}
+
 void setup(){
   // Serial port for debugging purposes
   Serial.begin(115200);
@@ -139,13 +173,6 @@ void setup(){
     Serial.println("An Error has occurred while mounting SPIFFS");
     return;
   }
-
-  // Setup pins GPIO
-  // pinMode(TRIGGER_PIN, INPUT_PULLUP);
-
-  // Get Wifi & AP SSID and password
-
-  
   
   // Create Mutexs
   scheduleMutex = xSemaphoreCreateMutex();
@@ -158,18 +185,15 @@ void setup(){
   WiFi.mode(WIFI_AP_STA);  /*ESP32 Access point configured*/
 
   if (xSemaphoreTake(configMutex,portMAX_DELAY)==pdTRUE){
-    String ap_ssid = readConfig("ap_ssid");
-    String ap_password = readConfig("ap_password");
-    String wifi_ssid = readConfig("wifi_ssid");
-    String wifi_password = readConfig("wifi_password");
+    readConfig();
     xSemaphoreGive(configMutex);
     // Give Mutex back
 
     Serial.println("\n[*] Creating ESP32 AP");
-    WiFi.softAP(ap_ssid.c_str(), ap_password.c_str());  /*Configuring ESP32 access point SSID and password*/
+    WiFi.softAP(ap_ssid, ap_password);  /*Configuring ESP32 access point SSID and password*/
     Serial.print("[+] AP Created with IP Gateway ");
     Serial.println(WiFi.softAPIP());     /*Printing the AP IP address*/
-    WiFi.begin(wifi_ssid.c_str(), wifi_password.c_str());  /*Connecting to Defined Access point*/
+    WiFi.begin(wifi_ssid, wifi_password);  /*Connecting to Defined Access point*/
     Serial.println("\n[*] Connecting to WiFi Network");
     while(WiFi.status() != WL_CONNECTED)
     {
@@ -180,7 +204,7 @@ void setup(){
     Serial.println(WiFi.localIP());   /*Printing IP address of Connected network*/
   }
   
-  
+  const String test = "test";
   // Test Ping
   bool success = Ping.ping("www.google.com", 3);
   if (success) Serial.println("Ping successful");
@@ -205,7 +229,7 @@ void setup(){
     request->send(SPIFFS, "/ap/index.html", String(), false, processor);
   }).setFilter(ON_AP_FILTER);
   server.on("/config", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(SPIFFS, "/ap/config.html", String(), false, processor);
+    request->send(SPIFFS, "/ap/config.html", String(), false, configLoader);
   }).setFilter(ON_AP_FILTER);
   server.on("/manual", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(SPIFFS, "/ap/manual.html", String(), false, processor);

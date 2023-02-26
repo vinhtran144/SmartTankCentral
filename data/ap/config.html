@@ -3,11 +3,13 @@
  
     <head>
         <script src="src/jquery-3.3.1.min.js"></script>
-        <script src="src/bootstrap.bundle.min.js"></script>
-        <link rel="stylesheet" type="text/css" href="src/bootstrap.min.css">
+        <!-- <script src="src/bootstrap.bundle.min.js"></script> -->
+        <link rel="stylesheet" type="text/css" href="../src/bootstrap.min.css">
+        <link rel="stylesheet" type="text/css" href="../src/style.css">
+
     </head>
  
-    <body>
+    <body class="container">
       <ul class="nav justify-content-center">
         <li class="nav-item">
           <a class="nav-link" href="/">Dashboard</a>
@@ -22,9 +24,59 @@
           <a class="nav-link disabled" tabindex="-1" aria-disabled="true" href="config">Config</a>
         </li>
       </ul>
- 
-</div>
-</div>
+      <div id="content"  class="container justify-content-center pt-5">
+        <div>
+          <label for="timezone">Timezone(s)</label>
+          <input type="interger" class="form-control" id="timezone" value = %timezone%>
+        </div>
+        <div class="form-group">
+          <label for="phOffset">phOffset</label>
+          <input type="float" class="form-control" id="phOffset" value= %phOffset%>
+        </div>
+        <div>
+          <label for="dechlorinatorDose">Dechlorinator dose (ml)</label>
+          <input type="float" class="form-control" id="dechlorinatorDose" value=%dechlorinatorDose%>
+        </div>
+        <div class="form-group">
+          <label for="secondPerMl">Dosing pumps s/ml</label>
+          <input type="float" class="form-control" id="secondPerMl" value=%secondPerMl%>
+        </div>
+
+        <div class="form-group">
+          <label for="wifi_ssid">Wifi SSID</label>
+          <input type="ssid" class="form-control" id="wifi_ssid" placeholder="Your local Wifi SSID" value="%wifi_ssid%">
+        </div>
+        <div class="form-group">
+          <label for="wifi_password">Wifi Password</label>
+          <input type="password" class="form-control" id="wifi_password" placeholder="Password">
+        </div>
+        <div class="form-group">
+          <label for="ap_ssid">Access point SSID</label>
+          <input type="ssid" class="form-control" id="ap_ssid" placeholder="ESP SSID" value="%ap_ssid%">
+        </div>
+        <div class="form-group">
+          <label for="ap_password">Access point Password</label>
+          <input type="password" class="form-control" id="ap_password" placeholder="Password" >
+        </div>
+        <div class="form-group">
+        <div id="save_config" class="my-5">
+          <div class="form-group">
+            <label for="pre_password">Current Password</label>
+            <input type="password" class="form-control" id="pre_password" placeholder="AP password" readonly>
+            <small id="saveHelp" class="form-text text-muted">Please enter current access point password to save changes</small>
+
+          </div>
+          <div class="d-flex justify-content-end pt-3">
+            <button type="submit" class="btn btn-primary submit-btn" id="save_btn" disabled onClick="sendData">Save and Restart</button>
+          </div>
+        </div>
+        
+      </div>
+      
+    </div>
+  </div>
 </body>
- 
+<script>
+  
+</script>
 </html>

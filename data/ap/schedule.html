@@ -136,7 +136,9 @@
                 method:'post',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
                 body: query,
-                })
+                }).then(() => {
+                    window.location.reload();
+            })
             $(event.target).attr("disabled","true");
         })
         
