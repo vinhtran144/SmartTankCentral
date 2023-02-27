@@ -139,7 +139,7 @@
                 }).then(() => {
                     window.location.reload();
             })
-            $(event.target).attr("disabled","true");
+            $(event.target).attr("disabled","");
         })
         
         // load dynamic component
@@ -176,11 +176,11 @@
 
                     let startHourSelect = hourSelect.clone().addClass("startHour");
                     startHourSelect.find("option").each(function(){
-                        if ($(this).attr('value') == selectedHour) $(this).attr("selected","true");
+                        if ($(this).attr('value') == selectedHour) $(this).attr("selected","");
                     })
                     let startMinSelect = minSelect.clone().addClass("startMin");
                     startMinSelect.find("option").each(function(){
-                        if ($(this).attr('value') == selectedMin) $(this).attr("selected","true");
+                        if ($(this).attr('value') == selectedMin) $(this).attr("selected","");
                     })
 
                     // Append the set
@@ -198,11 +198,11 @@
 
                     let endHourSelect = hourSelect.clone().addClass("endHour");
                     endHourSelect.find("option").each(function(){
-                        if ($(this).attr('value') == selectedHour) $(this).attr("selected","true");
+                        if ($(this).attr('value') == selectedHour) $(this).attr("selected","");
                     })
                     let endMinSelect = minSelect.clone().addClass("endMin");
                     endMinSelect.find("option").each(function(){
-                        if ($(this).attr('value') == selectedMin) $(this).attr("selected","true");
+                        if ($(this).attr('value') == selectedMin) $(this).attr("selected","");
                     })
 
                     // Append the set

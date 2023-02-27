@@ -4,8 +4,8 @@
     <head>
         <script src="src/jquery-3.3.1.min.js"></script>
         <!-- <script src="src/bootstrap.bundle.min.js"></script> -->
-        <link rel="stylesheet" type="text/css" href="../src/bootstrap.min.css">
-        <link rel="stylesheet" type="text/css" href="../src/style.css">
+        <link rel="stylesheet" type="text/css" href="src/bootstrap.min.css">
+        <link rel="stylesheet" type="text/css" href="src/style.css">
 
     </head>
  
@@ -30,16 +30,16 @@
           <input type="interger" class="form-control" id="timezone" value = %timezone%>
         </div>
         <div class="form-group">
-          <label for="phOffset">phOffset</label>
-          <input type="float" class="form-control" id="phOffset" value= %phOffset%>
+          <label for="ph_offset">phOffset</label>
+          <input type="float" class="form-control" id="ph_offset" value= %ph_offset%>
         </div>
         <div>
-          <label for="dechlorinatorDose">Dechlorinator dose (ml)</label>
-          <input type="float" class="form-control" id="dechlorinatorDose" value=%dechlorinatorDose%>
+          <label for="dechlorinator_dose">Dechlorinator dose (ml)</label>
+          <input type="float" class="form-control" id="dechlorinator_dose" value=%dechlorinator_dose%>
         </div>
         <div class="form-group">
-          <label for="secondPerMl">Dosing pumps s/ml</label>
-          <input type="float" class="form-control" id="secondPerMl" value=%secondPerMl%>
+          <label for="second_per_ml">Dosing pumps s/ml</label>
+          <input type="float" class="form-control" id="second_per_ml" value=%second_per_ml%>
         </div>
 
         <div class="form-group">
@@ -63,11 +63,11 @@
           <div class="form-group">
             <label for="pre_password">Current Password</label>
             <input type="password" class="form-control" id="pre_password" placeholder="AP password" readonly>
-            <small id="saveHelp" class="form-text text-muted">Please enter current access point password to save changes</small>
+            <small id="saveHelp" class="form-text text-muted">Once confirm values has change, physical restart ESP32 to apply changes</small>
 
           </div>
           <div class="d-flex justify-content-end pt-3">
-            <button type="submit" class="btn btn-primary submit-btn" id="save_btn" disabled onClick="sendData">Save and Restart</button>
+            <button type="submit" class="btn btn-primary submit-btn" id="save_btn" disabled >Save</button>
           </div>
         </div>
         
@@ -77,6 +77,30 @@
   </div>
 </body>
 <script>
-  
+  $("input").change(function(){
+    // Add the id name with its corresponding value to the save button
+    $("#save_btn").attr($(event.target).attr("id"),$(event.target).val().trim());
+    $("#pre_password").removeAttr("readonly");
+  })
+  $("#pre_password").change(function(){
+    // Enable save button
+    $("#save_btn").removeAttr("disabled");
+  })
+  $("#save_btn").click(function(){
+    let query = "";
+    $("#save_btn").each(function(){
+      $.each(this.attributes,function(i,a){
+        if (i>2) query = query + a.name + "=" + a.value + "&";
+      })
+    })
+    query = query.slice(0,-1);
+    fetch('/config',{
+      method:'post',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+      body: query,
+      }).then(() => {
+          window.location.reload();
+    })
+  })
 </script>
 </html>

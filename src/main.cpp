@@ -14,9 +14,9 @@ const char* wifi_password;
 const char* ap_ssid;
 const char* ap_password;
 int timezone;
-float phOffset;
-float dechlorinatorDose;
-float secondPerMl;
+float ph_offset;
+float dechlorinator_dose;
+float second_per_ml;
 
 // Flags
 bool scheduleChange = false;
@@ -87,10 +87,11 @@ void readConfig(){
   wifi_password =  doc["wifi_password"].as<const char* >();
   ap_ssid = doc["ap_ssid"].as<const char* >();
   ap_password = doc["ap_password"].as<const char* >();
-  timezone = doc["timezone"].as<int >();
-  phOffset = doc["phOffset"].as<float>();
-  dechlorinatorDose = doc["dechlorinatorDose"].as<float>();
-  secondPerMl =  doc["dechlorinatorDose"].as<float>();
+  timezone = atoi(doc["timezone"].as<const char* >());
+  ph_offset = atof(doc["ph_offset"].as<const char* >());
+  dechlorinator_dose = atof(doc["dechlorinator_dose"].as<const char* >());
+  second_per_ml =  atof(doc["second_per_ml"].as<const char* >());
+ 
 }
 
 // =======================================Web Processors=======================================
@@ -188,7 +189,6 @@ void setup(){
     readConfig();
     xSemaphoreGive(configMutex);
     // Give Mutex back
-
     Serial.println("\n[*] Creating ESP32 AP");
     WiFi.softAP(ap_ssid, ap_password);  /*Configuring ESP32 access point SSID and password*/
     Serial.print("[+] AP Created with IP Gateway ");
@@ -278,7 +278,45 @@ void setup(){
       request->redirect("/schedule");
   }).setFilter(ON_AP_FILTER); 
 
-  
+  server.on("/config", HTTP_POST, [](AsyncWebServerRequest *request){
+    // For config values
+
+    int params = request->params();
+    if (xSemaphoreTake(configMutex,5000/portTICK_RATE_MS)==pdTRUE){
+      File openfile = SPIFFS.open(configPath, "r"); 
+      DynamicJsonDocument doc(1024);
+      DeserializationError err = deserializeJson(doc, openfile);
+      if (err) {
+        Serial.print(F("deserializeJson() failed with code "));
+        Serial.println(err.f_str());
+      }
+      openfile.close();
+      // Check for previous AP password
+      AsyncWebParameter* prePass = request->getParam(params-1);
+      String input_pass(prePass->value().c_str());
+      String previous_pass(doc["ap_password"].as<const char* >());
+      if (input_pass == previous_pass){     
+        for(int i=0;i<params-1;i++){
+          AsyncWebParameter* p = request->getParam(i);
+          // Update the data with param
+          doc[p->name()] = p->value().c_str();
+        }
+        // save new configs values
+        File writefile = SPIFFS.open(configPath,"w");
+        serializeJson(doc,writefile);
+        writefile.close();
+        readConfig();
+        xSemaphoreGive(configMutex);
+      }  
+      else 
+        xSemaphoreGive(configMutex);
+        // Can be expanded to alert wrong input password to client, but
+        // The server will just ignore queries with the wrong password for now
+    }
+      
+    request->redirect("/config");
+
+  }).setFilter(ON_AP_FILTER); 
 
   // Start server
   server.begin();
