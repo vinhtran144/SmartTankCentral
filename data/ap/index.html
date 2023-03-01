@@ -1,30 +1,76 @@
 <!DOCTYPE html>
 <html>
  
-    <head>
-        <script src="src/jquery-3.3.1.min.js"></script>
-        <script src="src/bootstrap.bundle.min.js"></script>
-        <link rel="stylesheet" type="text/css" href="src/bootstrap.min.css">
-    </head>
- 
-    <body>
-        <ul class="nav justify-content-center">
-            <li class="nav-item">
-              <a class="nav-link disabled" tabindex="-1" aria-disabled="true" href="home">Dashboard</a>
+  <head>
+      <!-- <script src="src/jquery-3.3.1.min.js"></script> -->
+      <script src="../src/bootstrap.bundle.min.js"></script>
+      <link rel="stylesheet" type="text/css" href="../src/bootstrap.min.css">
+      <link rel="stylesheet" type="text/css" href="../src/style.css">
+      <meta name="viewport" content="initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+
+  </head>
+
+  <body class="container">
+      <ul class="nav justify-content-center"  id="navbar">
+          <li class="nav-item" >
+            <a class="nav-link disabled" tabindex="-1" aria-disabled="true" href="home">Home</a>
+          </li>
+          <li class="nav-item">
+              <a class="nav-link" href="schedule">Schedule</a>
             </li>
-            <li class="nav-item">
-                <a class="nav-link" href="schedule">Schedule</a>
-              </li>
-            <li class="nav-item">
-              <a class="nav-link" href="manual">Manual</a>
-            </li>
-            <li class="nav-item">
-              <a class="nav-link" href="config">Config</a>
-            </li>
-          </ul>
- 
-</div>
-</div>
+          <li class="nav-item">
+            <a class="nav-link" href="manual">Manual</a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href="config">Config</a>
+          </li>
+        </ul>
+        <div id="content"  class="container justify-content-center pt-5">
+          <div class="card">
+            <div class="card-header">
+              <h5 class="card-title">Server status</h5>
+            </div>
+            <div class="card-body">
+              <p class="card-text"><span style="font-weight:bold">Local time: </span><span id="local_time">9:49pm</span></p>
+              <p class="card-text"><span style="font-weight:bold">Wifi Status: </span><span id="wifi_satus">Connected</span></p>
+              <p class="card-text"><span style="font-weight:bold">IP Address: </span><span id="ip_address">192.168.1.1</span></p>
+              <p class="card-text"><span style="font-weight:bold">Ping test: </span><span id="ping_result">Success</span></p>
+            </div>
+          </div>
+          <div class="card my-5">
+            <div class="card-header">
+              <h5 class="card-title">Sensors values</h5>
+            </div>
+            <div class="card-body">
+              <p class="card-text"><span style="font-weight:bold">Temperature 1: </span><span>27</span>C</p>
+              <p class="card-text"><span style="font-weight:bold">Temperature 2: </span><span>28</span>C</p>
+              
+            </div>
+          </div>
+          <div class="card my-5">
+            <div class="card-header">
+              <h5 class="card-title">Reserve tank</h5>
+            </div>
+            <div class="card-body">
+              <p class="card-text"><span style="font-weight:bold">Status: </span><span id="reserve_status">Idle</span></p>
+              <p class="card-text"><span style="font-weight:bold">Last fill: </span><span id="reserve_last_full">28</span></p>
+              <p class="card-text"><span style="font-weight:bold">Last TDS value: </span><span id="reserve_tsd">100</span>ppm</p>
+            </div>
+          </div>
+        </div>
+        
 </body>
- 
+<script>
+  setInterval(function ( ) {
+    var xhttp = new XMLHttpRequest();
+    xhttp.onreadystatechange = function() {
+      if (this.readyState == 4 && this.status == 200) {
+        // document.getElementById("temperaturec").innerHTML = this.responseText;
+        console.log(this.responseText);
+      }
+    };
+    xhttp.open("GET", "/dashboard", true);
+    xhttp.send();
+  }, 10000) ;
+  </script>
 </html>

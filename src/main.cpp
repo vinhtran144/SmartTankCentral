@@ -2,16 +2,17 @@
 // Import required libraries
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include "WiFi.h"
-#include "ESPAsyncWebServer.h"
-#include "SPIFFS.h"
 #include <mutex>
 #include <ESP32Ping.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <driver/adc.h>
+#include "WiFi.h"
+#include "ESPAsyncWebServer.h"
+#include "AsyncJson.h"
+#include "SPIFFS.h"
 
-#define ONE_WIRE_BUS 34
+#define ONE_WIRE_BUS 5
 #define NUMBER_OF_TEMPERATURE_SENSOR 2
 #define TDS_SENSOR ADC1_CHANNEL_6
 #define NUM_OF_SAMPLE 30
@@ -22,7 +23,7 @@ const char* wifi_password;
 const char* ap_ssid;
 const char* ap_password;
 int timezone;
-float ph_offset;
+float high_tds;
 float dechlorinator_dose;
 float second_per_ml;
 
@@ -41,6 +42,8 @@ byte reserveStatus = 0;
 // 1 for filling
 // 2 for error
 
+// NTP server
+const char* ntpServer = "pool.ntp.org";
 
 // Sensor readings
 float tempSensorReading[NUMBER_OF_TEMPERATURE_SENSOR];
@@ -54,6 +57,7 @@ static SemaphoreHandle_t scheduleMutex;
 static SemaphoreHandle_t configMutex;
 static SemaphoreHandle_t flagsMutex;
 static SemaphoreHandle_t sensorMutex;
+static SemaphoreHandle_t historyMutex;
 
 // Create AsyncWebServer object on port 80
 AsyncWebServer server(80);
@@ -61,6 +65,7 @@ AsyncWebServer server(80);
 // file paths
 const char* schedulePath = "/schedule.json";
 const char* configPath = "/config.json";
+const char* historyPath = "/history.json";
 
 // Set handling task to 1 core
 #if CONFIG_FREERTOS_UNICORE
@@ -94,6 +99,38 @@ int getMedianNum(int bArray[], int iFilterLen){
   return bTemp;
 }
 
+void readConfig(){
+  File openfile = SPIFFS.open(configPath, "r"); 
+  DynamicJsonDocument doc(1024);
+  DeserializationError err = deserializeJson(doc, openfile);
+  if (err) {
+    Serial.print(F("deserializeJson() failed with code "));
+    Serial.println(err.f_str());
+  }
+  openfile.close();
+  wifi_ssid = doc["wifi_ssid"].as<const char* >();
+  wifi_password =  doc["wifi_password"].as<const char* >();
+  ap_ssid = doc["ap_ssid"].as<const char* >();
+  ap_password = doc["ap_password"].as<const char* >();
+  timezone = atoi(doc["timezone"].as<const char* >());
+  high_tds = atof(doc["high_tds"].as<const char* >());
+  dechlorinator_dose = atof(doc["dechlorinator_dose"].as<const char* >());
+  second_per_ml =  atof(doc["second_per_ml"].as<const char* >());
+ 
+}
+
+
+// Function that gets current epoch time
+unsigned long getTime() {
+  time_t now;
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    Serial.println("Failed to obtain time");
+    return(0);
+  }
+  time(&now);
+  return now;
+}
 // =======================================Tasks=======================================
 
 // Task handing command from web interface
@@ -139,6 +176,8 @@ void sensorManager(void *parameter){
   DeviceAddress tempDeviceAddress;
   sensors.begin();
   int numberOfDevices = sensors.getDeviceCount();
+  // Serial.print("Found ");
+  // Serial.println(numberOfDevices);
   // Start scanning for temperature sensors
   for(int i=0;i<numberOfDevices; i++){
     if(sensors.getAddress(tempDeviceAddress, i)){
@@ -157,22 +196,27 @@ void sensorManager(void *parameter){
       float averageTemp = 0;
       for(int i=0;i<numberOfDevices; i++){
         tempSensorReading[i]= sensors.getTempC(sensorAddress[i]);
-        averageTemp = averageTemp + tempSensorReading[i] / numberOfDevices;
+        // averageTemp = averageTemp + tempSensorReading[i] / numberOfDevices;
       }
-      
+      for(int i=0;i<numberOfDevices; i++){
+        // Serial.print("Device ");
+        // Serial.print(i);
+        // Serial.print(" ");
+        // Serial.println(tempSensorReading[i]);
+      }
       // Get TDS sensor data
-      for (int i=0;i<NUM_OF_SAMPLE;i++){
-        buffer[i] = adc1_get_raw(TDS_SENSOR);
-        vTaskDelay(20/portTICK_PERIOD_MS);
-      }
-      float averageVoltage = getMedianNum(buffer,NUM_OF_SAMPLE)*3.3/4096.0;
-      float compensationCoefficient = 1.0+0.02*(26.0-25.0);
-      //temperature compensation
-      float compensationVoltage=averageVoltage/compensationCoefficient;
-      //convert voltage value to tds value
-      float tdsValue=(133.42*compensationVoltage*compensationVoltage*compensationVoltage - 255.86*compensationVoltage*compensationVoltage + 857.39*compensationVoltage)*0.5;
-      Serial.print("TDS reading: ");
-      Serial.println(tdsValue);
+      // for (int i=0;i<NUM_OF_SAMPLE;i++){
+      //   buffer[i] = adc1_get_raw(TDS_SENSOR);
+      //   vTaskDelay(20/portTICK_PERIOD_MS);
+      // }
+      // float averageVoltage = getMedianNum(buffer,NUM_OF_SAMPLE)*3.3/4096.0;
+      // float compensationCoefficient = 1.0+0.02*(26.0-25.0);
+      // //temperature compensation
+      // float compensationVoltage=averageVoltage/compensationCoefficient;
+      // //convert voltage value to tds value
+      // float tdsValue=(133.42*compensationVoltage*compensationVoltage*compensationVoltage - 255.86*compensationVoltage*compensationVoltage + 857.39*compensationVoltage)*0.5;
+      // Serial.print("TDS reading: ");
+      // Serial.println(tdsValue);
       xSemaphoreGive(sensorMutex);
     }
     // delay 1 second before repeating
@@ -182,25 +226,6 @@ void sensorManager(void *parameter){
 
 }
 
-void readConfig(){
-  File openfile = SPIFFS.open(configPath, "r"); 
-  DynamicJsonDocument doc(1024);
-  DeserializationError err = deserializeJson(doc, openfile);
-  if (err) {
-    Serial.print(F("deserializeJson() failed with code "));
-    Serial.println(err.f_str());
-  }
-  openfile.close();
-  wifi_ssid = doc["wifi_ssid"].as<const char* >();
-  wifi_password =  doc["wifi_password"].as<const char* >();
-  ap_ssid = doc["ap_ssid"].as<const char* >();
-  ap_password = doc["ap_password"].as<const char* >();
-  timezone = atoi(doc["timezone"].as<const char* >());
-  ph_offset = atof(doc["ph_offset"].as<const char* >());
-  dechlorinator_dose = atof(doc["dechlorinator_dose"].as<const char* >());
-  second_per_ml =  atof(doc["second_per_ml"].as<const char* >());
- 
-}
 
 
 
@@ -256,7 +281,7 @@ String scheduleLoader(const String& var){
   return String();
 }
 
-// Config values
+// load config values
 String configLoader(const String& var){
   // Wait for 5 seconds to get Mutex. If for some reason it's not avaliable, the website will be empty, shouldn't be a big deal
   if (xSemaphoreTake(configMutex,5000/portTICK_RATE_MS)==pdTRUE){
@@ -275,6 +300,7 @@ String configLoader(const String& var){
   return String();
 }
 
+
 void setup(){
   // Serial port for debugging purposes
   Serial.begin(115200);
@@ -290,6 +316,7 @@ void setup(){
   configMutex = xSemaphoreCreateMutex();
   flagsMutex = xSemaphoreCreateMutex();
   sensorMutex = xSemaphoreCreateMutex();
+  historyMutex = xSemaphoreCreateMutex();
 
   // Create command data queue
   cmd_queue = xQueueCreate(10,50);
@@ -314,9 +341,8 @@ void setup(){
     Serial.print("\n[+] Connected to WiFi network with local IP : ");
     Serial.println(WiFi.localIP());   /*Printing IP address of Connected network*/
   }
-
-  
-  
+  configTime(0, 0, ntpServer);
+   
   // Test Ping
   bool success = Ping.ping("www.google.com", 3);
   if (success) Serial.println("Ping successful");
@@ -351,6 +377,24 @@ void setup(){
   server.on("/schedule", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(SPIFFS, "/ap/schedule.html", String(), false, scheduleLoader);
   }).setFilter(ON_AP_FILTER);
+
+  // Serves XMLHttpRequest for dashboard data
+  server.on("/dashboard", HTTP_GET, [](AsyncWebServerRequest *request){
+    AsyncResponseStream *response = request->beginResponseStream("application/json");
+    DynamicJsonDocument json(1024);
+    json["status"] = "ok";
+    json["ip"] = WiFi.localIP();
+    if (xSemaphoreTake(sensorMutex,1000/portTICK_RATE_MS)==pdTRUE){
+      JsonArray readings = json.createNestedArray("tempReadings");
+      for (int i=0; i<NUMBER_OF_TEMPERATURE_SENSOR;i++){
+        readings.add(tempSensorReading[i]);
+      }
+      xSemaphoreGive(sensorMutex);
+    }
+    
+    serializeJson(json, *response);
+    request->send(response);
+  });
 
   // Serves post request from clients on Access Point
   server.on("/form", HTTP_POST, [](AsyncWebServerRequest *request){
@@ -391,7 +435,6 @@ void setup(){
       
       request->redirect("/schedule");
   }).setFilter(ON_AP_FILTER); 
-
   server.on("/config", HTTP_POST, [](AsyncWebServerRequest *request){
     // For config values
 
