@@ -9,9 +9,12 @@
 #include <ESP32Ping.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include <driver/adc.h>
 
-#define ONE_WIRE_BUS 5
+#define ONE_WIRE_BUS 34
 #define NUMBER_OF_TEMPERATURE_SENSOR 2
+#define TDS_SENSOR ADC1_CHANNEL_6
+#define NUM_OF_SAMPLE 30
 
 // Configs data, stored a separated JSON in /data
 const char* wifi_ssid;
@@ -25,10 +28,23 @@ float second_per_ml;
 
 // Flags
 bool scheduleChange = false;
-bool tdsReady = false;
+bool tdsWarning = false;
+byte tankStatus = 0;          
+// Status for tank with
+  // 0 for idle
+  // 1 for draining
+  // 2 for filling
+  // 3 for paused (refilling reserved tank)
+  // 4 for halted (high TDS reading in reserved tank)
+byte reserveStatus = 0;
+// 0 for idle
+// 1 for filling
+// 2 for error
+
 
 // Sensor readings
 float tempSensorReading[NUMBER_OF_TEMPERATURE_SENSOR];
+float tdsSensorReading;
 
 // Queue handles
 static QueueHandle_t cmd_queue;  // web interface command queue
@@ -52,6 +68,31 @@ const char* configPath = "/config.json";
 #else
   static const BaseType_t app_cpu = 1;
 #endif
+
+// =====================================Functions=====================================
+// median filtering algorithm
+int getMedianNum(int bArray[], int iFilterLen){
+  int bTab[iFilterLen];
+  for (byte i = 0; i<iFilterLen; i++)
+  bTab[i] = bArray[i];
+  int i, j, bTemp;
+  for (j = 0; j < iFilterLen - 1; j++) {
+    for (i = 0; i < iFilterLen - j - 1; i++) {
+      if (bTab[i] > bTab[i + 1]) {
+        bTemp = bTab[i];
+        bTab[i] = bTab[i + 1];
+        bTab[i + 1] = bTemp;
+      }
+    }
+  }
+  if ((iFilterLen & 1) > 0){
+    bTemp = bTab[(iFilterLen - 1) / 2];
+  }
+  else {
+    bTemp = (bTab[iFilterLen / 2] + bTab[iFilterLen / 2 - 1]) / 2;
+  }
+  return bTemp;
+}
 
 // =======================================Tasks=======================================
 
@@ -86,6 +127,11 @@ void scheduleManager(void *parameter){
 
 // Reading DS18B20 temperature sensor
 void sensorManager(void *parameter){
+  // Setup for pH sensor
+  adc1_config_width(ADC_WIDTH_BIT_12);
+  adc1_config_channel_atten(TDS_SENSOR,ADC_ATTEN_DB_11);
+  int buffer[NUM_OF_SAMPLE];
+
   // calling variables for temperature sensors
   OneWire oneWire(ONE_WIRE_BUS);
   DallasTemperature sensors(&oneWire);
@@ -102,17 +148,31 @@ void sensorManager(void *parameter){
     }
     else Serial.println("Ghost address");
   }
+
+  // main loop
   while(1){
     sensors.requestTemperatures(); 
     if (xSemaphoreTake(sensorMutex,portMAX_DELAY)==pdTRUE){
+      // Get temperature sensor data
+      float averageTemp = 0;
       for(int i=0;i<numberOfDevices; i++){
         tempSensorReading[i]= sensors.getTempC(sensorAddress[i]);
+        averageTemp = averageTemp + tempSensorReading[i] / numberOfDevices;
       }
-      for(int i=0;i<numberOfDevices; i++){
-        Serial.print("Device ");
-        Serial.println(i);
-        Serial.println(tempSensorReading[i]);
+      
+      // Get TDS sensor data
+      for (int i=0;i<NUM_OF_SAMPLE;i++){
+        buffer[i] = adc1_get_raw(TDS_SENSOR);
+        vTaskDelay(20/portTICK_PERIOD_MS);
       }
+      float averageVoltage = getMedianNum(buffer,NUM_OF_SAMPLE)*3.3/4096.0;
+      float compensationCoefficient = 1.0+0.02*(26.0-25.0);
+      //temperature compensation
+      float compensationVoltage=averageVoltage/compensationCoefficient;
+      //convert voltage value to tds value
+      float tdsValue=(133.42*compensationVoltage*compensationVoltage*compensationVoltage - 255.86*compensationVoltage*compensationVoltage + 857.39*compensationVoltage)*0.5;
+      Serial.print("TDS reading: ");
+      Serial.println(tdsValue);
       xSemaphoreGive(sensorMutex);
     }
     // delay 1 second before repeating
@@ -262,7 +322,7 @@ void setup(){
   if (success) Serial.println("Ping successful");
   else Serial.println("Ping failed");
 
-  xTaskCreatePinnedToCore (sensorManager,"Read sensor values",	1024, NULL , 1, NULL, app_cpu);
+  xTaskCreatePinnedToCore (sensorManager,"Read sensor values",	2048 , NULL , 1, NULL, app_cpu);
 
   // Serves common source files
   server.on("/src/bootstrap.bundle.min.js", HTTP_GET, [](AsyncWebServerRequest *request){
