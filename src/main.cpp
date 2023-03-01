@@ -344,8 +344,8 @@ void setup(){
   configTime(0, 0, ntpServer);
    
   // Test Ping
-  bool success = Ping.ping("www.google.com", 3);
-  if (success) Serial.println("Ping successful");
+  bool pingResult = Ping.ping("www.google.com", 3);
+  if (pingResult) Serial.println("Ping successful");
   else Serial.println("Ping failed");
 
   xTaskCreatePinnedToCore (sensorManager,"Read sensor values",	2048 , NULL , 1, NULL, app_cpu);
@@ -383,14 +383,35 @@ void setup(){
     AsyncResponseStream *response = request->beginResponseStream("application/json");
     DynamicJsonDocument json(1024);
     json["status"] = "ok";
-    json["ip"] = WiFi.localIP();
+    json["ip_address"] = WiFi.localIP();
+    json["wifi_satus"] = WiFi.status();
+    json["timezone"] = timezone;
+    json["local_time"] = getTime();
     if (xSemaphoreTake(sensorMutex,1000/portTICK_RATE_MS)==pdTRUE){
-      JsonArray readings = json.createNestedArray("tempReadings");
+      JsonArray readings = json.createNestedArray("temp_sensor");
       for (int i=0; i<NUMBER_OF_TEMPERATURE_SENSOR;i++){
         readings.add(tempSensorReading[i]);
       }
       xSemaphoreGive(sensorMutex);
-    }
+    } else json["status"] = "error";
+    if (xSemaphoreTake(flagsMutex,1000/portTICK_RATE_MS)==pdTRUE){
+      json["pump_status"] = tankStatus;
+      json["reserve_status"] = reserveStatus;
+      xSemaphoreGive(flagsMutex);
+    } else json["status"] = "error";
+    if (xSemaphoreTake(historyMutex,1000/portTICK_RATE_MS)==pdTRUE){
+      File openfile = SPIFFS.open(historyPath, "r"); 
+      DynamicJsonDocument doc(1024);
+      DeserializationError err = deserializeJson(doc, openfile);
+      if (err) {
+        Serial.print(F("deserializeJson() failed with code "));
+        Serial.println(err.f_str());
+      }
+      openfile.close();
+      json["reserve_last_full"]=doc["last_fill_epoch"];
+      json["reserve_tsd"]=doc["last_tds_read"];
+      xSemaphoreGive(historyMutex);
+    } else json["status"] = "error";
     
     serializeJson(json, *response);
     request->send(response);
