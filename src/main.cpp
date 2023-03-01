@@ -7,6 +7,11 @@
 #include "SPIFFS.h"
 #include <mutex>
 #include <ESP32Ping.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+
+#define ONE_WIRE_BUS 5
+#define NUMBER_OF_TEMPERATURE_SENSOR 2
 
 // Configs data, stored a separated JSON in /data
 const char* wifi_ssid;
@@ -20,6 +25,10 @@ float second_per_ml;
 
 // Flags
 bool scheduleChange = false;
+bool tdsReady = false;
+
+// Sensor readings
+float tempSensorReading[NUMBER_OF_TEMPERATURE_SENSOR];
 
 // Queue handles
 static QueueHandle_t cmd_queue;  // web interface command queue
@@ -28,6 +37,7 @@ static QueueHandle_t cmd_queue;  // web interface command queue
 static SemaphoreHandle_t scheduleMutex;
 static SemaphoreHandle_t configMutex;
 static SemaphoreHandle_t flagsMutex;
+static SemaphoreHandle_t sensorMutex;
 
 // Create AsyncWebServer object on port 80
 AsyncWebServer server(80);
@@ -74,6 +84,44 @@ void scheduleManager(void *parameter){
   }
 }
 
+// Reading DS18B20 temperature sensor
+void sensorManager(void *parameter){
+  // calling variables for temperature sensors
+  OneWire oneWire(ONE_WIRE_BUS);
+  DallasTemperature sensors(&oneWire);
+  DeviceAddress sensorAddress[NUMBER_OF_TEMPERATURE_SENSOR];
+  DeviceAddress tempDeviceAddress;
+  sensors.begin();
+  int numberOfDevices = sensors.getDeviceCount();
+  // Start scanning for temperature sensors
+  for(int i=0;i<numberOfDevices; i++){
+    if(sensors.getAddress(tempDeviceAddress, i)){
+      for (int j=0;j<8; j++){
+        sensorAddress[i][j]=tempDeviceAddress[j];
+      }
+    }
+    else Serial.println("Ghost address");
+  }
+  while(1){
+    sensors.requestTemperatures(); 
+    if (xSemaphoreTake(sensorMutex,portMAX_DELAY)==pdTRUE){
+      for(int i=0;i<numberOfDevices; i++){
+        tempSensorReading[i]= sensors.getTempC(sensorAddress[i]);
+      }
+      for(int i=0;i<numberOfDevices; i++){
+        Serial.print("Device ");
+        Serial.println(i);
+        Serial.println(tempSensorReading[i]);
+      }
+      xSemaphoreGive(sensorMutex);
+    }
+    // delay 1 second before repeating
+    vTaskDelay(1000/portTICK_PERIOD_MS);
+  }
+  
+
+}
+
 void readConfig(){
   File openfile = SPIFFS.open(configPath, "r"); 
   DynamicJsonDocument doc(1024);
@@ -93,6 +141,8 @@ void readConfig(){
   second_per_ml =  atof(doc["second_per_ml"].as<const char* >());
  
 }
+
+
 
 // =======================================Web Processors=======================================
 
@@ -179,6 +229,7 @@ void setup(){
   scheduleMutex = xSemaphoreCreateMutex();
   configMutex = xSemaphoreCreateMutex();
   flagsMutex = xSemaphoreCreateMutex();
+  sensorMutex = xSemaphoreCreateMutex();
 
   // Create command data queue
   cmd_queue = xQueueCreate(10,50);
@@ -203,12 +254,15 @@ void setup(){
     Serial.print("\n[+] Connected to WiFi network with local IP : ");
     Serial.println(WiFi.localIP());   /*Printing IP address of Connected network*/
   }
+
   
-  const String test = "test";
+  
   // Test Ping
   bool success = Ping.ping("www.google.com", 3);
   if (success) Serial.println("Ping successful");
   else Serial.println("Ping failed");
+
+  xTaskCreatePinnedToCore (sensorManager,"Read sensor values",	1024, NULL , 1, NULL, app_cpu);
 
   // Serves common source files
   server.on("/src/bootstrap.bundle.min.js", HTTP_GET, [](AsyncWebServerRequest *request){
