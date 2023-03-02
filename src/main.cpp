@@ -1,5 +1,6 @@
 
 // Import required libraries
+#include <DNSServer.h>
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <mutex>
@@ -38,9 +39,9 @@ byte tankStatus = 0;
   // 3 for paused (refilling reserved tank)
   // 4 for halted (high TDS reading in reserved tank)
 byte reserveStatus = 0;
-// 0 for idle
-// 1 for filling
-// 2 for error
+  // 0 for idle
+  // 1 for filling
+  // 2 for error
 
 // NTP server
 const char* ntpServer = "pool.ntp.org";
@@ -61,6 +62,7 @@ static SemaphoreHandle_t historyMutex;
 
 // Create AsyncWebServer object on port 80
 AsyncWebServer server(80);
+DNSServer dnsServer;
 
 // file paths
 const char* schedulePath = "/schedule.json";
@@ -176,9 +178,6 @@ void sensorManager(void *parameter){
   DeviceAddress tempDeviceAddress;
   sensors.begin();
   int numberOfDevices = sensors.getDeviceCount();
-  // Serial.print("Found ");
-  // Serial.println(numberOfDevices);
-  // Start scanning for temperature sensors
   for(int i=0;i<numberOfDevices; i++){
     if(sensors.getAddress(tempDeviceAddress, i)){
       for (int j=0;j<8; j++){
@@ -196,13 +195,6 @@ void sensorManager(void *parameter){
       float averageTemp = 0;
       for(int i=0;i<numberOfDevices; i++){
         tempSensorReading[i]= sensors.getTempC(sensorAddress[i]);
-        // averageTemp = averageTemp + tempSensorReading[i] / numberOfDevices;
-      }
-      for(int i=0;i<numberOfDevices; i++){
-        // Serial.print("Device ");
-        // Serial.print(i);
-        // Serial.print(" ");
-        // Serial.println(tempSensorReading[i]);
       }
       // Get TDS sensor data
       // for (int i=0;i<NUM_OF_SAMPLE;i++){
@@ -230,22 +222,6 @@ void sensorManager(void *parameter){
 
 
 // =======================================Web Processors=======================================
-
-// Replaces placeholder with LED state value
-String processor(const String& var){
-  // Serial.println(var);
-  // if(var == "STATE"){
-  //   if(digitalRead(ledPin)){
-  //     ledState = "ON";
-  //   }
-  //   else{
-  //     ledState = "OFF";
-  //   }
-  //   Serial.print(ledState);
-  //   return ledState;
-  // }
-  return "test";
-}
 
 // Schedule attribute strings
 String scheduleLoader(const String& var){
@@ -300,56 +276,23 @@ String configLoader(const String& var){
   return String();
 }
 
+// =================================Setup Functions======================================
+class CaptiveRequestHandler : public AsyncWebHandler {
+public:
+  CaptiveRequestHandler() {}
+  virtual ~CaptiveRequestHandler() {}
 
-void setup(){
-  // Serial port for debugging purposes
-  Serial.begin(115200);
-
-  // Initialize SPIFFS
-  if(!SPIFFS.begin(true)){
-    Serial.println("An Error has occurred while mounting SPIFFS");
-    return;
+  bool canHandle(AsyncWebServerRequest *request){
+    //request->addInterestingHeader("ANY");
+    return true;
   }
-  
-  // Create Mutexs
-  scheduleMutex = xSemaphoreCreateMutex();
-  configMutex = xSemaphoreCreateMutex();
-  flagsMutex = xSemaphoreCreateMutex();
-  sensorMutex = xSemaphoreCreateMutex();
-  historyMutex = xSemaphoreCreateMutex();
 
-  // Create command data queue
-  cmd_queue = xQueueCreate(10,50);
-
-  WiFi.mode(WIFI_AP_STA);  /*ESP32 Access point configured*/
-
-  if (xSemaphoreTake(configMutex,portMAX_DELAY)==pdTRUE){
-    readConfig();
-    xSemaphoreGive(configMutex);
-    // Give Mutex back
-    Serial.println("\n[*] Creating ESP32 AP");
-    WiFi.softAP(ap_ssid, ap_password);  /*Configuring ESP32 access point SSID and password*/
-    Serial.print("[+] AP Created with IP Gateway ");
-    Serial.println(WiFi.softAPIP());     /*Printing the AP IP address*/
-    WiFi.begin(wifi_ssid, wifi_password);  /*Connecting to Defined Access point*/
-    Serial.println("\n[*] Connecting to WiFi Network");
-    while(WiFi.status() != WL_CONNECTED)
-    {
-        Serial.print(".");
-        delay(100);
-    }
-    Serial.print("\n[+] Connected to WiFi network with local IP : ");
-    Serial.println(WiFi.localIP());   /*Printing IP address of Connected network*/
+  void handleRequest(AsyncWebServerRequest *request) {
+    request->send(SPIFFS, "/ap/index.html", String(), false); 
   }
-  configTime(0, 0, ntpServer);
-   
-  // Test Ping
-  bool pingResult = Ping.ping("www.google.com", 3);
-  if (pingResult) Serial.println("Ping successful");
-  else Serial.println("Ping failed");
+};
 
-  xTaskCreatePinnedToCore (sensorManager,"Read sensor values",	2048 , NULL , 1, NULL, app_cpu);
-
+void setupServer(){
   // Serves common source files
   server.on("/src/bootstrap.bundle.min.js", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(SPIFFS, "/src/bootstrap.bundle.min.js", "text/javascript");
@@ -366,13 +309,13 @@ void setup(){
 
   // Serves get request to clients on Access Point
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(SPIFFS, "/ap/index.html", String(), false, processor);
+    request->send(SPIFFS, "/ap/index.html", String(), false);
   }).setFilter(ON_AP_FILTER);
   server.on("/config", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(SPIFFS, "/ap/config.html", String(), false, configLoader);
   }).setFilter(ON_AP_FILTER);
   server.on("/manual", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(SPIFFS, "/ap/manual.html", String(), false, processor);
+    request->send(SPIFFS, "/ap/manual.html", String(), false);
   }).setFilter(ON_AP_FILTER);
   server.on("/schedule", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(SPIFFS, "/ap/schedule.html", String(), false, scheduleLoader);
@@ -456,6 +399,7 @@ void setup(){
       
       request->redirect("/schedule");
   }).setFilter(ON_AP_FILTER); 
+  dnsServer.start(53, "*", WiFi.softAPIP());
   server.on("/config", HTTP_POST, [](AsyncWebServerRequest *request){
     // For config values
 
@@ -496,10 +440,65 @@ void setup(){
 
   }).setFilter(ON_AP_FILTER); 
 
+  // Captive portal
+  server.addHandler(new CaptiveRequestHandler()).setFilter(ON_AP_FILTER);
   // Start server
   server.begin();
 }
+
+void setup(){
+  // Serial port for debugging purposes
+  Serial.begin(115200);
+
+  // Initialize SPIFFS
+  if(!SPIFFS.begin(true)){
+    Serial.println("An Error has occurred while mounting SPIFFS");
+    return;
+  }
+  
+  // Create Mutexs
+  scheduleMutex = xSemaphoreCreateMutex();
+  configMutex = xSemaphoreCreateMutex();
+  flagsMutex = xSemaphoreCreateMutex();
+  sensorMutex = xSemaphoreCreateMutex();
+  historyMutex = xSemaphoreCreateMutex();
+
+  // Create command data queue
+  cmd_queue = xQueueCreate(10,50);
+
+  WiFi.mode(WIFI_AP_STA);  /*ESP32 Access point configured*/
+
+  if (xSemaphoreTake(configMutex,portMAX_DELAY)==pdTRUE){
+    readConfig();
+    xSemaphoreGive(configMutex);
+    // Give Mutex back
+    Serial.println("\n[*] Creating ESP32 AP");
+    WiFi.softAP(ap_ssid, ap_password);  /*Configuring ESP32 access point SSID and password*/
+    Serial.print("[+] AP Created with IP Gateway ");
+    Serial.println(WiFi.softAPIP());     /*Printing the AP IP address*/
+    WiFi.begin(wifi_ssid, wifi_password);  /*Connecting to Defined Access point*/
+    Serial.println("\n[*] Connecting to WiFi Network");
+    while(WiFi.status() != WL_CONNECTED)
+    {
+        Serial.print(".");
+        delay(100);
+    }
+    Serial.print("\n[+] Connected to WiFi network with local IP : ");
+    Serial.println(WiFi.localIP());   /*Printing IP address of Connected network*/
+  }
+  configTime(0, 0, ntpServer);
+   
+  // Test Ping
+  bool pingResult = Ping.ping("www.google.com", 3);
+  if (pingResult) Serial.println("Ping successful");
+  else Serial.println("Ping failed");
+
+  xTaskCreatePinnedToCore (sensorManager,"Read sensor values",	2048 , NULL , 1, NULL, app_cpu);
+
+  setupServer();
+  
+}
  
 void loop(){
-  
+   dnsServer.processNextRequest();
 }
