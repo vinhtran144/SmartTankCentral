@@ -12,6 +12,7 @@
 #include "ESPAsyncWebServer.h"
 #include "AsyncJson.h"
 #include "SPIFFS.h"
+#include <time.h>
 
 #define ONE_WIRE_BUS 5
 #define NUMBER_OF_TEMPERATURE_SENSOR 2
@@ -29,7 +30,7 @@ float dechlorinator_dose;
 float second_per_ml;
 
 // Flags
-bool scheduleChange = false;
+bool scheduleChange = true;
 bool tdsWarning = false;
 byte tankStatus = 0;          
 // Status for tank with
@@ -115,6 +116,7 @@ void readConfig(){
   ap_ssid = doc["ap_ssid"].as<const char* >();
   ap_password = doc["ap_password"].as<const char* >();
   timezone = atoi(doc["timezone"].as<const char* >());
+  // timezone=0;
   high_tds = atof(doc["high_tds"].as<const char* >());
   dechlorinator_dose = atof(doc["dechlorinator_dose"].as<const char* >());
   second_per_ml =  atof(doc["second_per_ml"].as<const char* >());
@@ -133,6 +135,62 @@ unsigned long getTime() {
   time(&now);
   return now;
 }
+
+void printTriggerTime(unsigned long epoch){
+  time_t rawtime = epoch;
+  struct tm  ts;
+  char       buf[80];
+
+  // Format time, "ddd yyyy-mm-dd hh:mm:ss zzz"
+  ts = *localtime(&rawtime);
+  strftime(buf, sizeof(buf), "%d-%m-%Y %H:%M:%S", &ts);
+  Serial.print(buf);
+}
+
+// Function return trigger epoch
+unsigned long getNextTrigger(int offSet, bool isDaily, bool schedule[7]){
+  struct tm timeinfo;
+  if(!getLocalTime(&timeinfo)){
+    Serial.println("Failed to obtain time");
+    return(0);
+  }
+  unsigned long currentDay = getTime();
+  char buffer[3];
+  strftime(buffer,3,"%u",&timeinfo); const int currentWeekday = atoi(buffer);
+  strftime(buffer,3,"%H",&timeinfo); const int currentHour = atoi(buffer);
+  strftime(buffer,3,"%M",&timeinfo); const int currentMinute = atoi(buffer);
+  strftime(buffer,3,"%S",&timeinfo); const int currentSecond = atoi(buffer);
+  const int currentOffset = currentHour*3600 + currentMinute*60 + currentSecond+timezone;
+  currentDay = currentDay - ( currentHour*3600 + currentMinute*60 + currentSecond);
+  if (isDaily){
+    if (currentOffset<offSet){
+      // Trigger the same day
+      return currentDay+offSet;
+    }
+    // Otherwise, trigger next day
+    return currentDay+24*3600+offSet;
+  }
+  else {
+    int index = currentWeekday-1;
+    // check for same day trigger
+    if (currentOffset<offSet && schedule[index]==true){
+      return currentDay+offSet;
+    }
+    // Count till the next day
+    int nextDay=1; index++;
+    while(nextDay<8){
+      if(index>6) index=0;
+      if(schedule[index]==true){
+        return currentDay+nextDay*24*3600+offSet;
+      }
+      nextDay++; index++;
+    }
+    // if it reaches here, then schedule template is empty, so return maximum value
+    return 2147483647;
+  }
+}
+
+
 // =======================================Tasks=======================================
 
 // Task handing command from web interface
@@ -150,18 +208,122 @@ void cmdHandler(void *parameter){
 }
 
 void scheduleManager(void *parameter){
-  // setup the task when first ran
-  if (xSemaphoreTake(scheduleMutex,portMAX_DELAY)==pdTRUE){
-    // File openfile = SPIFFS.open(schedulePath, "r"); 
-    //   DynamicJsonDocument doc(1024);
-    //   DeserializationError err = deserializeJson(doc, openfile);
-    //   if (err) {
-    //     Serial.print(F("deserializeJson() failed with code "));
-    //     Serial.println(err.f_str());
-    //   }
-    xSemaphoreGive(scheduleMutex);
+  const unsigned long MAX_VAL = 2147483647; // Maximum value of epoch
+  const int NUMBER_OF_DEVICES = 6;
 
+  // for easy assignment and flexibility, the 1st is for starting times, 2nd is for shut off time
+  unsigned long triggerEpochs[2][6];        // idividual trigger time 
+  int secOffset[2][6];                      // Time of day in seconds
+
+  // templates for the activations
+  bool scheduleTemplate[6][7];              // whever device is triggered in each day of the week
+  bool enableTemplate[6];                   // whever device is enabled or disabled
+  int dosage[6];                            // dose of the dosing pump
+
+  // Assign default values
+  for (auto &i : triggerEpochs) {for (auto &j : i){ j = MAX_VAL; }};
+  for (auto &i : secOffset) {for (auto &j : i){ j = 0; }};
+  for (auto &i : scheduleTemplate) {for (auto &j : i){ j = false; }};
+  for (int i : enableTemplate) { i = false; };
+  for (int i : dosage) { i = 0; };
+
+  unsigned long nextTrigger = MAX_VAL; // next trigger epoch, basically never trigger
+  int nextIndex = 0;
+
+  while(1){
+    if (xSemaphoreTake(flagsMutex,0)==pdTRUE) {
+      // check flags for changes
+      if (scheduleChange == true){
+        // Update the flag
+        scheduleChange = false;
+        xSemaphoreGive(flagsMutex);
+        if (xSemaphoreTake(scheduleMutex,portMAX_DELAY)==pdTRUE){
+          File openfile = SPIFFS.open(schedulePath, "r"); 
+            DynamicJsonDocument doc(1024);
+            DeserializationError err = deserializeJson(doc, openfile);
+            if (err) {
+              Serial.print(F("deserializeJson() failed with code "));
+              Serial.println(err.f_str());
+            }
+          xSemaphoreGive(scheduleMutex);
+          
+          // In theory, these data would only be adjusted very rarely, so to save memory and less time
+          // compairing what changes, the code is kept simple and straight forward.
+          for (int i =0; i<NUMBER_OF_DEVICES; i++){
+            // update enableTemplate
+            if (doc["data"][i]["status"].as<int>())
+              enableTemplate[i] = true;
+            else enableTemplate[i] = false;
+
+            // update offset time, which is in second from midnight
+            secOffset[0][i] = doc["data"][i]["startHour"].as<int>()*3600+doc["data"][i]["startMin"].as<int>()*60;
+            secOffset[1][i] = doc["data"][i]["endHour"].as<int>()*3600+doc["data"][i]["endMin"].as<int>()*60;
+
+            // update dosage
+            dosage[i]=doc["data"][i]["dosage"].as<int>();
+
+            // update schedule template
+            const char* schedule = doc["data"][i]["schedule"].as<const char*>();
+            for (int j = 0;j<7;j++){
+              if (schedule[j]=='1') scheduleTemplate[i][j] =true;
+              else scheduleTemplate[i][j] =false;
+            }
+          }
+
+          // Update the triggers epoch arrays, 1st row 
+          for (int j =0;j<6;j++){
+            if(enableTemplate[j]){
+              if(j<2) triggerEpochs[0][j] = getNextTrigger(secOffset[0][j],true,scheduleTemplate[j]);
+              else triggerEpochs[0][j] = getNextTrigger(secOffset[0][j],false,scheduleTemplate[j]);
+            }
+            else triggerEpochs[0][j] = MAX_VAL;
+          }
+          // Update those with stop triggers, 2nd row
+          for (int j =0;j<2;j++){
+            if(enableTemplate[j]){
+              triggerEpochs[1][j] = getNextTrigger(secOffset[1][j],true,scheduleTemplate[j]);
+            }
+            else triggerEpochs[1][j] = MAX_VAL;
+          }
+
+          nextTrigger = MAX_VAL;
+          for (int i = 0; i<2; i++){
+            for (int j = 0;j<6;j++){
+              if (nextTrigger>triggerEpochs[i][j]){
+                nextTrigger = triggerEpochs[i][j];
+                nextIndex = i*6+j;
+              }
+            }
+          }
+          
+
+          // Update the flag
+          if (xSemaphoreTake(flagsMutex,portMAX_DELAY)==pdTRUE){
+            scheduleChange = false;
+            xSemaphoreGive(flagsMutex);
+          }
+
+          // Debug Serialprint
+          Serial.println("Trigger Epochs: ");
+          for (auto &i : triggerEpochs) {
+            for (auto  &j : i){ 
+              printTriggerTime(j);
+              Serial.print("     ");
+            }
+            Serial.println(" ");
+          };
+          Serial.println(" ");
+          Serial.println("Next trigger: ");
+          printTriggerTime(nextTrigger);
+        }
+      }
+      else {
+        xSemaphoreGive(flagsMutex);
+      }
+    }
+    vTaskDelay(1000/portTICK_PERIOD_MS);
   }
+  
 }
 
 // Reading DS18B20 temperature sensor
@@ -494,6 +656,7 @@ void setup(){
   else Serial.println("Ping failed");
 
   xTaskCreatePinnedToCore (sensorManager,"Read sensor values",	2048 , NULL , 1, NULL, app_cpu);
+  xTaskCreatePinnedToCore (scheduleManager,"Manage schedules",	4096 , NULL , 1, NULL, app_cpu);
 
   setupServer();
   
