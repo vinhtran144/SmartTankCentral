@@ -230,13 +230,13 @@
                     fieldcontainer.append("<label class='my-1 mr-2' >Schedule</label>");
                     const schedule = $(this).attr("schedule");
                     let scheduleGroup = $("<div class='btn-group my-1 mr-sm-2' role='group' aria-label='Schedule'></div>");
-                    scheduleGroup.append("<button type='button' class='btn "+(schedule[0] == '1'?"btn-primary":"btn-light")+" day'>Mon</button>");
-                    scheduleGroup.append("<button type='button' class='btn "+(schedule[1] == '1'?"btn-primary":"btn-light")+" day'>Tue</button>");
-                    scheduleGroup.append("<button type='button' class='btn "+(schedule[2] == '1'?"btn-primary":"btn-light")+" day'>Wed</button>");
-                    scheduleGroup.append("<button type='button' class='btn "+(schedule[3] == '1'?"btn-primary":"btn-light")+" day'>Thu</button>");
-                    scheduleGroup.append("<button type='button' class='btn "+(schedule[4] == '1'?"btn-primary":"btn-light")+" day'>Fri</button>");
-                    scheduleGroup.append("<button type='button' class='btn "+(schedule[5] == '1'?"btn-primary":"btn-light")+" day'>Sat</button>");
-                    scheduleGroup.append("<button type='button' class='btn "+(schedule[6] == '1'?"btn-primary":"btn-light")+" day'>Sun</button>");
+                    scheduleGroup.append("<button type='button' class='btn "+(schedule[0] == '1'?"btn-primary":"btn-light")+" day'>Mo</button>");
+                    scheduleGroup.append("<button type='button' class='btn "+(schedule[1] == '1'?"btn-primary":"btn-light")+" day'>Tu</button>");
+                    scheduleGroup.append("<button type='button' class='btn "+(schedule[2] == '1'?"btn-primary":"btn-light")+" day'>We</button>");
+                    scheduleGroup.append("<button type='button' class='btn "+(schedule[3] == '1'?"btn-primary":"btn-light")+" day'>Th</button>");
+                    scheduleGroup.append("<button type='button' class='btn "+(schedule[4] == '1'?"btn-primary":"btn-light")+" day'>Fr</button>");
+                    scheduleGroup.append("<button type='button' class='btn "+(schedule[5] == '1'?"btn-primary":"btn-light")+" day'>Sa</button>");
+                    scheduleGroup.append("<button type='button' class='btn "+(schedule[6] == '1'?"btn-primary":"btn-light")+" day'>Su</button>");
                     fieldcontainer.append(scheduleGroup);
                 }
                 editAdd.append(fieldcontainer);

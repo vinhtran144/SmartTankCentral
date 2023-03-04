@@ -12,12 +12,13 @@
 #include "ESPAsyncWebServer.h"
 #include "AsyncJson.h"
 #include "SPIFFS.h"
-#include <time.h>
 
 #define ONE_WIRE_BUS 5
 #define NUMBER_OF_TEMPERATURE_SENSOR 2
 #define TDS_SENSOR ADC1_CHANNEL_6
 #define NUM_OF_SAMPLE 30
+
+const unsigned long MAX_EPOCH_VALUE = 2147483647; // Maximum value of epoch
 
 // Configs data, stored a separated JSON in /data
 const char* wifi_ssid;
@@ -148,7 +149,7 @@ void printTriggerTime(unsigned long epoch){
 }
 
 // Function return trigger epoch
-unsigned long getNextTrigger(int offSet, bool isDaily, bool schedule[7]){
+unsigned long getNextTrigger(int offSet, bool schedule[7]){
   struct tm timeinfo;
   if(!getLocalTime(&timeinfo)){
     Serial.println("Failed to obtain time");
@@ -160,17 +161,17 @@ unsigned long getNextTrigger(int offSet, bool isDaily, bool schedule[7]){
   strftime(buffer,3,"%H",&timeinfo); const int currentHour = atoi(buffer);
   strftime(buffer,3,"%M",&timeinfo); const int currentMinute = atoi(buffer);
   strftime(buffer,3,"%S",&timeinfo); const int currentSecond = atoi(buffer);
-  const int currentOffset = currentHour*3600 + currentMinute*60 + currentSecond+timezone;
+  const int currentOffset = currentHour*3600 + currentMinute*60 + currentSecond + timezone;
   currentDay = currentDay - ( currentHour*3600 + currentMinute*60 + currentSecond);
-  if (isDaily){
-    if (currentOffset<offSet){
-      // Trigger the same day
-      return currentDay+offSet;
-    }
-    // Otherwise, trigger next day
-    return currentDay+24*3600+offSet;
-  }
-  else {
+  // if (isDaily){
+  //   if (currentOffset<offSet){
+  //     // Trigger the same day
+  //     return currentDay+offSet;
+  //   }
+  //   // Otherwise, trigger next day
+  //   return currentDay+24*3600+offSet;
+  // }
+  // else {
     int index = currentWeekday-1;
     // check for same day trigger
     if (currentOffset<offSet && schedule[index]==true){
@@ -186,30 +187,135 @@ unsigned long getNextTrigger(int offSet, bool isDaily, bool schedule[7]){
       nextDay++; index++;
     }
     // if it reaches here, then schedule template is empty, so return maximum value
-    return 2147483647;
-  }
+    return MAX_EPOCH_VALUE;
+  // }
 }
 
-
+// 
 // =======================================Tasks=======================================
 
-// Task handing command from web interface
-void cmdHandler(void *parameter){
-  
-  char buf[50];
+// Task handing commands and drive shift register
+void shiftRegisterDriver(void *parameter){
+  uint8_t registerState[2] = {B00000000,B00000000};
+  Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
+
+  // PINOUT MASKS
+  // 1st shift register
+  const uint8_t  POWER_12_MASK = B10000000;
+  // const uint8_t  POWER_24_MASK = B01000000;
+  const uint8_t  LIGHT_MASK = B00100000;
+  const uint8_t  CO2_MASK = B00010000;
+  const uint8_t  PUMP_0_MASK = B00001000;
+  const uint8_t  PUMP_1_MASK = B00000100;
+  const uint8_t  PUMP_2_MASK = B00000010;
+  const uint8_t  PUMP_3_MASK = B00000001;
+  uint8_t pumpMaskArr[4] = {PUMP_0_MASK,PUMP_1_MASK,PUMP_2_MASK,PUMP_3_MASK};
+  // 2nd shift register
+  const uint8_t  RESET_ALL = B10101000;
+  const uint8_t  START_DRAIN = B01000000;
+  const uint8_t  STOP_DRAIN = B10000000;
+  const uint8_t  START_FILL = B00010000;
+  const uint8_t  STOP_FILL = B00100000;
+  const uint8_t  RESERVE_FILL = B00000100;
+  const uint8_t  RESERVE_STOP = B00001000;
+  // flags to keep track of the outputs
+  byte activeDosing = 0;
+  unsigned long deactivateDosing[4] = {0, 0, 0, 0};   // epoch for when pump is done
+
+  const int DEACTIVATE_VALVE_MS = 200;                // Should be quick switch before deactivating, so a delay is enough
+  const int S_PER_ML = (int) second_per_ml;
+  // get MS per ml from config
+
+  // Start up routine, reseting all the electronic valves
+  registerState[1] = RESET_ALL;
+  Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
+  vTaskDelay(DEACTIVATE_VALVE_MS/portTICK_PERIOD_MS);
+  registerState[1] = B00000000;
+  Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
+
+  int delaytime = 0;
+  char buf[5];
 
   while(1){
-    // check queue
-    if (xQueueReceive(cmd_queue, (void *)&buf, 0) == pdTRUE){
-      Serial.println(buf);
+    if (activeDosing == 0){
+      delaytime = portMAX_DELAY;
+      // Turns of 12V power
+      registerState[0] = registerState[0] & !POWER_12_MASK;
+      Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
+    } else delaytime = 0;
+    // wait at queue, if there's no active dosing, wait indefinitely
+    if (xQueueReceive(cmd_queue, (void *)&buf, delaytime) == pdTRUE){
+      if (buf[0] == 'L'){
+        // Light command, 0 for off, 1 for on
+        if (buf[1]=='0') registerState[0] =  registerState[0] & !LIGHT_MASK;
+        if (buf[1]=='1') registerState[0] =  registerState[0] | LIGHT_MASK;
+        Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
+      }
+      if (buf[0] == 'C'){
+        // CO2 injection command, 0 for off, 1 for on
+        if (buf[1]=='0') registerState[0] =  registerState[0] & !CO2_MASK;
+        if (buf[1]=='1') registerState[0] =  registerState[0] | CO2_MASK;
+        Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
+      }
+      if (buf[0] == 'V'){
+        // Start 12V power
+        registerState[0] = registerState[0] | POWER_12_MASK;
+        Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
+        // valves command, 0-start drain, 1-stop drain, 2-start fill, 3-stop drain,
+        // 4-start fill (reserve), 5-stop fill (reserve)
+        uint8_t action;
+        if (buf[1]=='0') action = START_DRAIN;
+        if (buf[1]=='1') action = STOP_DRAIN;
+        if (buf[1]=='2') action = START_FILL;
+        if (buf[1]=='3') action = STOP_FILL;
+        if (buf[1]=='4') action = RESERVE_FILL;
+        if (buf[1]=='5') action = RESERVE_STOP;
+
+        // Activate valve
+        registerState[1] =  registerState[1] | action;
+        Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
+        vTaskDelay(DEACTIVATE_VALVE_MS/portTICK_PERIOD_MS);
+        registerState[1] =  registerState[1] & !action;
+        Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
+      }
+      if (buf[0] =='D'){
+        //  Dosing pump command, second character is the index of the pump, 3-4th character is the dose in ml
+        int index = buf[1]-48;
+        uint8_t action = pumpMaskArr[index];
+        int dosage = (buf[2]-48)*10+(buf[3]-48);
+        Serial.print("Dose ammount: ");Serial.println(dosage);
+        // Check if dosing pump is not already active, if it is active, then ignore
+        if (deactivateDosing[index] == 0){
+          // Start 12V power
+          registerState[0] = registerState[0] | POWER_12_MASK;
+          registerState[1] =  registerState[1] | action;
+          Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
+          activeDosing++;
+          deactivateDosing[index] = getTime()+dosage*S_PER_ML;
+
+        }
+      }
     }
-    vTaskDelay(100 / portTICK_PERIOD_MS);
+    if (activeDosing !=0){
+      unsigned long currentTime = getTime();
+      for (int i = 0; i<4 ;i++){
+        if(deactivateDosing[i] != 0 && currentTime>deactivateDosing[i]){
+          activeDosing--;
+          deactivateDosing[i] = 0;
+          uint8_t action = pumpMaskArr[i];
+          registerState[0] = registerState[0] & !action;
+          Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
+        }
+      }
+    }
+    // vTaskDelay(100 / portTICK_PERIOD_MS);
   }
 }
 
 void scheduleManager(void *parameter){
-  const unsigned long MAX_VAL = 2147483647; // Maximum value of epoch
+
   const int NUMBER_OF_DEVICES = 6;
+  const bool DEBUG = true;
 
   // for easy assignment and flexibility, the 1st is for starting times, 2nd is for shut off time
   unsigned long triggerEpochs[2][6];        // idividual trigger time 
@@ -217,17 +323,15 @@ void scheduleManager(void *parameter){
 
   // templates for the activations
   bool scheduleTemplate[6][7];              // whever device is triggered in each day of the week
-  bool enableTemplate[6];                   // whever device is enabled or disabled
-  int dosage[6];                            // dose of the dosing pump
+  bool enableTemplate[6] = {false,false,false,false,false,false};                   // whever device is enabled or disabled
+  int dosage[6]={0,0,0,0,0,0};                            // dose of the dosing pump
 
   // Assign default values
-  for (auto &i : triggerEpochs) {for (auto &j : i){ j = MAX_VAL; }};
+  for (auto &i : triggerEpochs) {for (auto &j : i){ j = MAX_EPOCH_VALUE; }};
   for (auto &i : secOffset) {for (auto &j : i){ j = 0; }};
   for (auto &i : scheduleTemplate) {for (auto &j : i){ j = false; }};
-  for (int i : enableTemplate) { i = false; };
-  for (int i : dosage) { i = 0; };
 
-  unsigned long nextTrigger = MAX_VAL; // next trigger epoch, basically never trigger
+  unsigned long nextTrigger = MAX_EPOCH_VALUE; // next trigger epoch, basically never trigger
   int nextIndex = 0;
 
   while(1){
@@ -270,23 +374,26 @@ void scheduleManager(void *parameter){
             }
           }
 
-          // Update the triggers epoch arrays, 1st row 
-          for (int j =0;j<6;j++){
-            if(enableTemplate[j]){
-              if(j<2) triggerEpochs[0][j] = getNextTrigger(secOffset[0][j],true,scheduleTemplate[j]);
-              else triggerEpochs[0][j] = getNextTrigger(secOffset[0][j],false,scheduleTemplate[j]);
-            }
-            else triggerEpochs[0][j] = MAX_VAL;
-          }
+          // // Update the triggers epoch arrays, 1st row 
+          // for (int j =0;j<6;j++){
+          //   if(enableTemplate[j]){
+          //     triggerEpochs[0][j] = getNextTrigger(secOffset[0][j],scheduleTemplate[j]);
+          //   }
+          //   else triggerEpochs[0][j] = MAX_VAL;
+          // }
           // Update those with stop triggers, 2nd row
-          for (int j =0;j<2;j++){
-            if(enableTemplate[j]){
-              triggerEpochs[1][j] = getNextTrigger(secOffset[1][j],true,scheduleTemplate[j]);
+          for (int i = 0;i<2;i++){
+            for (int j =0;j<6;j++){
+              if (i==1 & j==2) break;
+              if(enableTemplate[j]){
+                triggerEpochs[i][j] = getNextTrigger(secOffset[i][j],scheduleTemplate[j]);
+              }
+              else triggerEpochs[i][j] = MAX_EPOCH_VALUE;
             }
-            else triggerEpochs[1][j] = MAX_VAL;
           }
+          
 
-          nextTrigger = MAX_VAL;
+          nextTrigger = MAX_EPOCH_VALUE;
           for (int i = 0; i<2; i++){
             for (int j = 0;j<6;j++){
               if (nextTrigger>triggerEpochs[i][j]){
@@ -304,17 +411,21 @@ void scheduleManager(void *parameter){
           }
 
           // Debug Serialprint
-          Serial.println("Trigger Epochs: ");
-          for (auto &i : triggerEpochs) {
-            for (auto  &j : i){ 
-              printTriggerTime(j);
-              Serial.print("     ");
-            }
+          if (DEBUG){
+            Serial.println("Trigger Epochs: ");
+            for (auto &i : triggerEpochs) {
+              for (auto  &j : i){ 
+                printTriggerTime(j);
+                Serial.print("     ");
+              }
+              Serial.println(" ");
+            };
             Serial.println(" ");
-          };
-          Serial.println(" ");
-          Serial.println("Next trigger: ");
-          printTriggerTime(nextTrigger);
+            Serial.println("Next trigger: ");
+            Serial.println(" ");
+            printTriggerTime(nextTrigger);
+          }
+          
         }
       }
       else {
@@ -403,9 +514,9 @@ String scheduleLoader(const String& var){
     // Generate attribute values with schedule data
     char attr [150];
     if (var == "LightSchedule") 
-      snprintf(attr,150,"status = '%d' startHour = '%d' startMin = '%d' endHour = '%d' endMin = '%d'",doc["data"][0]["status"].as<int>(),doc["data"][0]["startHour"].as<int>(),doc["data"][0]["startMin"].as<int>(),doc["data"][0]["endHour"].as<int>(),doc["data"][0]["endMin"].as<int>());
+      snprintf(attr,150,"status = '%d' startHour = '%d' startMin = '%d' endHour = '%d' endMin = '%d'' schedule= '%s'",doc["data"][0]["status"].as<int>(),doc["data"][0]["startHour"].as<int>(),doc["data"][0]["startMin"].as<int>(),doc["data"][0]["endHour"].as<int>(),doc["data"][0]["endMin"].as<int>(),doc["data"][0]["schedule"].as<const char* >());
     if (var == "CO2Schedule") 
-      snprintf(attr,150,"status = '%d' startHour = '%d' startMin = '%d' endHour = '%d' endMin = '%d'",doc["data"][1]["status"].as<int>(),doc["data"][1]["startHour"].as<int>(),doc["data"][1]["startMin"].as<int>(),doc["data"][1]["endHour"].as<int>(),doc["data"][1]["endMin"].as<int>());
+      snprintf(attr,150,"status = '%d' startHour = '%d' startMin = '%d' endHour = '%d' endMin = '%d'' schedule= '%s'",doc["data"][1]["status"].as<int>(),doc["data"][1]["startHour"].as<int>(),doc["data"][1]["startMin"].as<int>(),doc["data"][1]["endHour"].as<int>(),doc["data"][1]["endMin"].as<int>(),doc["data"][1]["schedule"].as<const char* >());
     if (var == "WaterSchedule") 
       snprintf(attr,150,"status = '%d' startHour = '%d' startMin = '%d' schedule= '%s'",doc["data"][2]["status"].as<int>(),doc["data"][2]["startHour"].as<int>(),doc["data"][2]["startMin"].as<int>(),doc["data"][2]["schedule"].as<const char* >());
     if (var == "Pump1Schedule") 
@@ -626,7 +737,7 @@ void setup(){
   historyMutex = xSemaphoreCreateMutex();
 
   // Create command data queue
-  cmd_queue = xQueueCreate(10,50);
+  cmd_queue = xQueueCreate(20,5);
 
   WiFi.mode(WIFI_AP_STA);  /*ESP32 Access point configured*/
 
