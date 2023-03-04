@@ -157,23 +157,29 @@ unsigned long getNextTrigger(int offSet, bool schedule[7]){
   }
   unsigned long currentDay = getTime();
   char buffer[3];
-  strftime(buffer,3,"%u",&timeinfo); const int currentWeekday = atoi(buffer);
+  strftime(buffer,3,"%u",&timeinfo); int currentWeekday = atoi(buffer);
   strftime(buffer,3,"%H",&timeinfo); const int currentHour = atoi(buffer);
   strftime(buffer,3,"%M",&timeinfo); const int currentMinute = atoi(buffer);
   strftime(buffer,3,"%S",&timeinfo); const int currentSecond = atoi(buffer);
-  const int currentOffset = currentHour*3600 + currentMinute*60 + currentSecond + timezone;
+  int currentOffset = currentHour*3600 + currentMinute*60 + currentSecond + timezone+120;
+  
   currentDay = currentDay - ( currentHour*3600 + currentMinute*60 + currentSecond);
-  // if (isDaily){
-  //   if (currentOffset<offSet){
-  //     // Trigger the same day
-  //     return currentDay+offSet;
-  //   }
-  //   // Otherwise, trigger next day
-  //   return currentDay+24*3600+offSet;
-  // }
-  // else {
+
+  // Adjust due to timezone
+  if (currentOffset>86400){
+    currentOffset = currentOffset-86400;
+    currentDay=currentDay-86400;
+    currentWeekday--;
+    if (currentWeekday==0) currentWeekday = 7;
+  } 
+  if (currentOffset<0){
+    currentOffset = currentOffset+86400;
+    currentDay=currentDay+86400;
+    currentWeekday++;
+    if (currentWeekday==8) currentWeekday = 1;
+  } 
     int index = currentWeekday-1;
-    // check for same day trigger
+    // check for same day trigger, won't activate if it's within 2 mins
     if (currentOffset<offSet && schedule[index]==true){
       return currentDay+offSet;
     }
@@ -191,7 +197,28 @@ unsigned long getNextTrigger(int offSet, bool schedule[7]){
   // }
 }
 
-// 
+// Function to check if it's active
+bool isActive (int startOffset, int stopOffset){
+  struct tm timeinfo;
+  if(!getLocalTime(&timeinfo)){
+    Serial.println("Failed to obtain time");
+    return(0);
+  }
+  char buffer[3];
+  strftime(buffer,3,"%H",&timeinfo); const int currentHour = atoi(buffer);
+  strftime(buffer,3,"%M",&timeinfo); const int currentMinute = atoi(buffer);
+  strftime(buffer,3,"%S",&timeinfo); const int currentSecond = atoi(buffer);
+  int currentOffset = currentHour*3600 + currentMinute*60 + currentSecond + timezone;
+  if (currentOffset>86400){
+    currentOffset = currentOffset-86400;
+  } 
+  if (currentOffset<0){
+    currentOffset = currentOffset+86400;
+  } 
+  if (startOffset<currentOffset && currentOffset<stopOffset)
+    return true;
+  else return false;
+}
 // =======================================Tasks=======================================
 
 // Task handing commands and drive shift register
@@ -240,20 +267,21 @@ void shiftRegisterDriver(void *parameter){
     if (activeDosing == 0){
       delaytime = portMAX_DELAY;
       // Turns of 12V power
-      registerState[0] = registerState[0] & !POWER_12_MASK;
+      registerState[0] = registerState[0] & ~POWER_12_MASK;
       Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
     } else delaytime = 0;
     // wait at queue, if there's no active dosing, wait indefinitely
     if (xQueueReceive(cmd_queue, (void *)&buf, delaytime) == pdTRUE){
+      Serial.println(buf);
       if (buf[0] == 'L'){
         // Light command, 0 for off, 1 for on
-        if (buf[1]=='0') registerState[0] =  registerState[0] & !LIGHT_MASK;
+        if (buf[1]=='0') registerState[0] =  registerState[0] & ~LIGHT_MASK;
         if (buf[1]=='1') registerState[0] =  registerState[0] | LIGHT_MASK;
         Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
       }
       if (buf[0] == 'C'){
         // CO2 injection command, 0 for off, 1 for on
-        if (buf[1]=='0') registerState[0] =  registerState[0] & !CO2_MASK;
+        if (buf[1]=='0') registerState[0] =  registerState[0] & ~CO2_MASK;
         if (buf[1]=='1') registerState[0] =  registerState[0] | CO2_MASK;
         Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
       }
@@ -275,7 +303,7 @@ void shiftRegisterDriver(void *parameter){
         registerState[1] =  registerState[1] | action;
         Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
         vTaskDelay(DEACTIVATE_VALVE_MS/portTICK_PERIOD_MS);
-        registerState[1] =  registerState[1] & !action;
+        registerState[1] =  registerState[1] & ~action;
         Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
       }
       if (buf[0] =='D'){
@@ -303,7 +331,7 @@ void shiftRegisterDriver(void *parameter){
           activeDosing--;
           deactivateDosing[i] = 0;
           uint8_t action = pumpMaskArr[i];
-          registerState[0] = registerState[0] & !action;
+          registerState[0] = registerState[0] & ~action;
           Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
         }
       }
@@ -373,15 +401,12 @@ void scheduleManager(void *parameter){
               else scheduleTemplate[i][j] =false;
             }
           }
-
-          // // Update the triggers epoch arrays, 1st row 
-          // for (int j =0;j<6;j++){
-          //   if(enableTemplate[j]){
-          //     triggerEpochs[0][j] = getNextTrigger(secOffset[0][j],scheduleTemplate[j]);
-          //   }
-          //   else triggerEpochs[0][j] = MAX_VAL;
-          // }
-          // Update those with stop triggers, 2nd row
+          // Update the flag
+          if (xSemaphoreTake(flagsMutex,portMAX_DELAY)==pdTRUE){
+            scheduleChange = false;
+            xSemaphoreGive(flagsMutex);
+          }
+          // Update the triggers epoch arrays
           for (int i = 0;i<2;i++){
             for (int j =0;j<6;j++){
               if (i==1 & j==2) break;
@@ -391,8 +416,6 @@ void scheduleManager(void *parameter){
               else triggerEpochs[i][j] = MAX_EPOCH_VALUE;
             }
           }
-          
-
           nextTrigger = MAX_EPOCH_VALUE;
           for (int i = 0; i<2; i++){
             for (int j = 0;j<6;j++){
@@ -402,14 +425,27 @@ void scheduleManager(void *parameter){
               }
             }
           }
-          
-
-          // Update the flag
-          if (xSemaphoreTake(flagsMutex,portMAX_DELAY)==pdTRUE){
-            scheduleChange = false;
-            xSemaphoreGive(flagsMutex);
+          // Activate Light and CO2 if it's in operation hours
+          if (isActive(secOffset[0][0],secOffset[1][0])){
+            char msg[]="L1";
+            if (xQueueSend(cmd_queue, (void *)&msg, 10) != pdTRUE) {
+              Serial.println("CMD queue is full");
+            }
+            char test[]="V0";
+            if (xQueueSend(cmd_queue, (void *)&test, 10) != pdTRUE) {
+              Serial.println("CMD queue is full");
+            }
           }
-
+          if (isActive(secOffset[0][1],secOffset[1][1])){
+            char msg[]="C1";
+            if (xQueueSend(cmd_queue, (void *)&msg, 10) != pdTRUE) {
+              Serial.println("CMD queue is full");
+            }
+            char test[]="V1";
+            if (xQueueSend(cmd_queue, (void *)&test, 10) != pdTRUE) {
+              Serial.println("CMD queue is full");
+            }
+          } 
           // Debug Serialprint
           if (DEBUG){
             Serial.println("Trigger Epochs: ");
@@ -432,7 +468,66 @@ void scheduleManager(void *parameter){
         xSemaphoreGive(flagsMutex);
       }
     }
-    vTaskDelay(1000/portTICK_PERIOD_MS);
+    // unsigned long currentTime = getTime()+timezone;
+    // if (currentTime>nextTrigger){
+    //   // Get the msg to send
+    //   char msg[5];
+    //   switch (nextIndex)
+    //   {
+    //     case 0:
+    //       snprintf(msg,5,"L1");
+    //       break;
+    //     case 1:
+    //       snprintf(msg,5,"C1");
+    //       break;
+    //     case 2:
+    //       // Send autochange, implement later
+    //       break;
+    //     case 3:
+    //     case 4:
+    //     case 5:
+    //       {int divided = dosage[nextIndex]/10;
+    //       int remainder = dosage[nextIndex]%10;
+    //       snprintf(msg,5,"P%d%d%d",nextIndex-2,divided,remainder);
+    //       break;}
+    //     case 6:
+    //       snprintf(msg,5,"L0");
+    //       break;
+    //     case 7:
+    //       snprintf(msg,5,"L0");
+    //       break;
+       
+    //     default:
+    //       snprintf(msg,5,"E");
+    //       break;
+    //   }
+    //   Serial.print("Sending scheduled cmd");
+    //   if (xQueueSend(cmd_queue, (void *)&msg, 10) != pdTRUE) {
+    //     Serial.println("CMD queue is full");
+    //   }
+
+    //   // Update next trigger epoch
+    //   int i = nextIndex/6;
+    //   int j = nextIndex%6;
+    //   if(enableTemplate[j]){
+    //     triggerEpochs[i][j] = getNextTrigger(secOffset[i][j],scheduleTemplate[j]);
+    //   }
+    //   else triggerEpochs[i][j] = MAX_EPOCH_VALUE;
+    //   for (int i = 0; i<2; i++){
+    //     for (int j = 0;j<6;j++){
+    //       if (nextTrigger>triggerEpochs[i][j]){
+    //         nextTrigger = triggerEpochs[i][j];
+    //         nextIndex = i*6+j;
+    //       }
+    //     }
+    //   }
+    // }
+    // else if (nextTrigger-currentTime>60){
+    //   // If the next trigger is more than 1 minutes away, idle and save processing resources
+    //   vTaskDelay(60000/portTICK_PERIOD_MS);
+    // } 
+    // else 
+    vTaskDelay(1000/portTICK_PERIOD_MS);   
   }
   
 }
@@ -536,7 +631,7 @@ String configLoader(const String& var){
   if (xSemaphoreTake(configMutex,5000/portTICK_RATE_MS)==pdTRUE){
     // Read config config in SPIFFS
     File openfile = SPIFFS.open(configPath, "r"); 
-    DynamicJsonDocument doc(1024);
+    DynamicJsonDocument doc(512);
     DeserializationError err = deserializeJson(doc, openfile);
     if (err) {
       Serial.print(F("deserializeJson() failed with code "));
@@ -617,7 +712,7 @@ void setupServer(){
     } else json["status"] = "error";
     if (xSemaphoreTake(historyMutex,1000/portTICK_RATE_MS)==pdTRUE){
       File openfile = SPIFFS.open(historyPath, "r"); 
-      DynamicJsonDocument doc(1024);
+      DynamicJsonDocument doc(512);
       DeserializationError err = deserializeJson(doc, openfile);
       if (err) {
         Serial.print(F("deserializeJson() failed with code "));
@@ -679,7 +774,7 @@ void setupServer(){
     int params = request->params();
     if (xSemaphoreTake(configMutex,5000/portTICK_RATE_MS)==pdTRUE){
       File openfile = SPIFFS.open(configPath, "r"); 
-      DynamicJsonDocument doc(1024);
+      DynamicJsonDocument doc(512);
       DeserializationError err = deserializeJson(doc, openfile);
       if (err) {
         Serial.print(F("deserializeJson() failed with code "));
@@ -768,6 +863,7 @@ void setup(){
 
   xTaskCreatePinnedToCore (sensorManager,"Read sensor values",	2048 , NULL , 1, NULL, app_cpu);
   xTaskCreatePinnedToCore (scheduleManager,"Manage schedules",	4096 , NULL , 1, NULL, app_cpu);
+  xTaskCreatePinnedToCore (shiftRegisterDriver,"Drive drivers",	2048 , NULL , 3, NULL, app_cpu);
 
   setupServer();
   
