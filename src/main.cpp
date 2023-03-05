@@ -150,7 +150,7 @@ unsigned long getNextTrigger(int offSet, bool schedule[7]){
   strftime(buffer,3,"%H",&timeinfo); const int currentHour = atoi(buffer);
   strftime(buffer,3,"%M",&timeinfo); const int currentMinute = atoi(buffer);
   strftime(buffer,3,"%S",&timeinfo); const int currentSecond = atoi(buffer);
-  int currentOffset = currentHour*3600 + currentMinute*60 + currentSecond + timezone+120;
+  int currentOffset = currentHour*3600 + currentMinute*60 + currentSecond + timezone;
   
   currentDay = currentDay - ( currentHour*3600 + currentMinute*60 + currentSecond);
 
@@ -258,7 +258,7 @@ void shiftRegisterDriver(void *parameter){
       // Turns of 12V power
       registerState[0] = registerState[0] & ~POWER_12_MASK;
       Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
-    } else delaytime = 0;
+    } else delaytime = 100/portTICK_PERIOD_MS;
     // wait at queue, if there's no active dosing, wait indefinitely
     if (xQueueReceive(cmd_queue, (void *)&buf, delaytime) == pdTRUE){
       Serial.println(buf);
@@ -305,11 +305,19 @@ void shiftRegisterDriver(void *parameter){
         if (deactivateDosing[index] == 0){
           // Start 12V power
           registerState[0] = registerState[0] | POWER_12_MASK;
-          registerState[1] =  registerState[1] | action;
+          registerState[0] =  registerState[0] | action;
           Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
           activeDosing++;
           deactivateDosing[index] = getTime()+dosage*S_PER_ML;
-
+          
+          // Serial.print("Active pumps: ");
+          // Serial.println(activeDosing);
+          // Serial.println("Dose epochs: ");
+          //   for (auto &i : deactivateDosing) {
+          //       printTriggerTime(i);
+          //       Serial.print("     ");
+          //     }
+          //   Serial.println(" ");
         }
       }
     }
@@ -322,6 +330,14 @@ void shiftRegisterDriver(void *parameter){
           uint8_t action = pumpMaskArr[i];
           registerState[0] = registerState[0] & ~action;
           Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
+          // Serial.print("Active pumps: ");
+          // Serial.println(activeDosing);
+          // Serial.println("Dose epochs: ");
+          //   for (auto &i : deactivateDosing) {
+          //       printTriggerTime(i);
+          //       Serial.print("     ");
+          //     }
+          //   Serial.println(" ");
         }
       }
     }
@@ -332,7 +348,7 @@ void shiftRegisterDriver(void *parameter){
 void scheduleManager(void *parameter){
 
   const int NUMBER_OF_DEVICES = 6;
-  const bool DEBUG = true;
+  const bool DEBUG = false;
 
   // for easy assignment and flexibility, the 1st is for starting times, 2nd is for shut off time
   unsigned long triggerEpochs[2][6];        // idividual trigger time 
@@ -470,20 +486,20 @@ void scheduleManager(void *parameter){
         case 5:
           {int divided = dosage[nextIndex]/10;
           int remainder = dosage[nextIndex]%10;
-          snprintf(msg,5,"P%d%d%d",nextIndex-2,divided,remainder);
+          snprintf(msg,5,"D%d%d%d",nextIndex-2,divided,remainder);
           break;}
         case 6:
           snprintf(msg,5,"L0");
           break;
         case 7:
-          snprintf(msg,5,"L0");
+          snprintf(msg,5,"C0");
           break;
        
         default:
           snprintf(msg,5,"E");
           break;
       }
-      Serial.print("Sending scheduled cmd");
+      Serial.println("Sending scheduled cmd");
       if (xQueueSend(cmd_queue, (void *)&msg, 10) != pdTRUE) {
         Serial.println("CMD queue is full");
       }
@@ -491,10 +507,18 @@ void scheduleManager(void *parameter){
       // Update next trigger epoch
       int i = nextIndex/6;
       int j = nextIndex%6;
+      Serial.print("Updating i= ");
+        Serial.print(i);Serial.print(" j=");Serial.println(j);
       if(enableTemplate[j]){
+        Serial.print("Current trigger: ");
+        printTriggerTime(nextTrigger);
         triggerEpochs[i][j] = getNextTrigger(secOffset[i][j],scheduleTemplate[j]);
+        Serial.println("");
+        Serial.print("Updated trigger: ");
+        printTriggerTime(triggerEpochs[i][j]);
       }
       else triggerEpochs[i][j] = MAX_EPOCH_VALUE;
+      nextTrigger=MAX_EPOCH_VALUE;
       for (int i = 0; i<2; i++){
         for (int j = 0;j<6;j++){
           if (nextTrigger>triggerEpochs[i][j]){
@@ -708,6 +732,7 @@ void setupServer(){
         }
         File writefile = SPIFFS.open(schedulePath,"w");
         serializeJson(doc,writefile);
+        vTaskDelay(500/portTICK_PERIOD_MS);
         writefile.close();
         xSemaphoreGive(scheduleMutex);
         if (xSemaphoreTake(flagsMutex, portMAX_DELAY)==pdTRUE){
@@ -748,6 +773,7 @@ void setupServer(){
         File writefile = SPIFFS.open(configPath,"w");
         serializeJson(doc,writefile);
         writefile.close();
+        vTaskDelay(500/portTICK_PERIOD_MS);
         readConfig();
         xSemaphoreGive(configMutex);
       }  
