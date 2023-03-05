@@ -224,7 +224,6 @@ void shiftRegisterDriver(void *parameter){
   const uint8_t  PUMP_1_MASK = B00000100;
   const uint8_t  PUMP_2_MASK = B00000010;
   const uint8_t  PUMP_3_MASK = B00000001;
-  uint8_t pumpMaskArr[4] = {PUMP_0_MASK,PUMP_1_MASK,PUMP_2_MASK,PUMP_3_MASK};
   // 2nd shift register
   const uint8_t  RESET_ALL = B10101000;
   const uint8_t  START_DRAIN = B01000000;
@@ -234,12 +233,12 @@ void shiftRegisterDriver(void *parameter){
   const uint8_t  RESERVE_FILL = B00000100;
   const uint8_t  RESERVE_STOP = B00001000;
   // flags to keep track of the outputs
-  byte activeDevice = 0;
-  byte activeDosing = 0;
+  bool lightActive = false;
+  bool co2Active = false;
   unsigned long deactivateDosing[4] = {0, 0, 0, 0};   // epoch for when pump is done
 
-  const int DEACTIVATE_VALVE_MS = 200;                // Should be quick switch before deactivating, so a delay is enough
-  const int S_PER_ML = (int) second_per_ml;
+  const int DEACTIVATE_VALVE_MS = 8000;                
+  const int MS_PER_ML = second_per_ml*1000;
   // get MS per ml from config
 
   // Start up routine, reseting all the electronic valves
@@ -253,29 +252,22 @@ void shiftRegisterDriver(void *parameter){
   char buf[5];
 
   while(1){
-    if (activeDevice == 0){
-      // turn off if there's no active device
+    // wait at queue indefinitely
+    if (!lightActive && !co2Active) {
       registerState[0] = registerState[0] & ~FAN_MASK;
     }
-    if (activeDosing == 0){
-      delaytime = portMAX_DELAY;
-      // Turns of 12V power
-      registerState[0] = registerState[0] & ~POWER_12_MASK;
-      Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
-    } else delaytime = 100/portTICK_PERIOD_MS;
-    // wait at queue, if there's no active dosing, wait indefinitely
-    if (xQueueReceive(cmd_queue, (void *)&buf, delaytime) == pdTRUE){
+    if (xQueueReceive(cmd_queue, (void *)&buf, portMAX_DELAY) == pdTRUE){
       // Serial.println(buf);
       if (buf[0] == 'L'){
         // Light command, 0 for off, 1 for on
         if (buf[1]=='0') {
           registerState[0] =  registerState[0] & ~LIGHT_MASK;
-          activeDevice--;
+          lightActive = false;
         }
         if (buf[1]=='1')  {
           registerState[0] = registerState[0] | LIGHT_MASK;
           registerState[0] = registerState[0] | FAN_MASK;
-          activeDevice++;
+          lightActive = true;
         }
         Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
       }
@@ -283,12 +275,12 @@ void shiftRegisterDriver(void *parameter){
         // CO2 injection command, 0 for off, 1 for on
         if (buf[1]=='0') {
           registerState[0] =  registerState[0] & ~CO2_MASK;
-          activeDevice--;
+          co2Active = false;
         }
         if (buf[1]=='1') {
           registerState[0] =  registerState[0] | CO2_MASK;
           registerState[0] = registerState[0] | FAN_MASK;
-          activeDevice++;
+          co2Active = true;
         }
         Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
       }
@@ -311,61 +303,34 @@ void shiftRegisterDriver(void *parameter){
         Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
         vTaskDelay(DEACTIVATE_VALVE_MS/portTICK_PERIOD_MS);
         registerState[1] =  registerState[1] & ~action;
+        registerState[0] = registerState[0] & ~POWER_12_MASK;
         Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
       }
       if (buf[0] =='D'){
+        
+         // Start 12V power
+        registerState[0] = registerState[0] | POWER_12_MASK;
+        Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
         //  Dosing pump command, second character is the index of the pump, 3-4th character is the dose in ml
-        int index = buf[1]-48;
-        uint8_t action = pumpMaskArr[index];
+        uint8_t action;
+        if (buf[1]=='0') action = PUMP_0_MASK;
+        if (buf[1]=='1') action = PUMP_1_MASK;
+        if (buf[1]=='2') action = PUMP_2_MASK;
+        if (buf[1]=='3') action = PUMP_3_MASK;
         int dosage = (buf[2]-48)*10+(buf[3]-48);
-        Serial.print("Dose ammount: ");Serial.println(dosage);
-        // Check if dosing pump is not already active, if it is active, then ignore
-        if (deactivateDosing[index] == 0){
-          // Start 12V power
-          registerState[0] = registerState[0] | POWER_12_MASK;
-          registerState[0] =  registerState[0] | action;
-          Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
-          activeDosing++;
-          deactivateDosing[index] = getTime()+dosage*S_PER_ML;
-          
-          // Serial.print("Active pumps: ");
-          // Serial.println(activeDosing);
-          // Serial.println("Dose epochs: ");
-          //   for (auto &i : deactivateDosing) {
-          //       printTriggerTime(i);
-          //       Serial.print("     ");
-          //     }
-          //   Serial.println(" ");
-        }
+        registerState[0] =  registerState[0] | action;
+        Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
+        vTaskDelay(dosage*MS_PER_ML/portTICK_PERIOD_MS);
+        registerState[0] =  registerState[0] & ~action;
+        registerState[0] = registerState[0] & ~POWER_12_MASK;
+        Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
       }
     }
-    if (activeDosing !=0){
-      unsigned long currentTime = getTime();
-      for (int i = 0; i<4 ;i++){
-        if(deactivateDosing[i] != 0 && currentTime>deactivateDosing[i]){
-          activeDosing--;
-          deactivateDosing[i] = 0;
-          uint8_t action = pumpMaskArr[i];
-          registerState[0] = registerState[0] & ~action;
-          Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
-          // Serial.print("Active pumps: ");
-          // Serial.println(activeDosing);
-          // Serial.println("Dose epochs: ");
-          //   for (auto &i : deactivateDosing) {
-          //       printTriggerTime(i);
-          //       Serial.print("     ");
-          //     }
-          //   Serial.println(" ");
-        }
-      }
-    }
-    // vTaskDelay(100 / portTICK_PERIOD_MS);
+    
   }
 }
 
 void scheduleManager(void *parameter){
-
-  const int NUMBER_OF_DEVICES = 6;
   const bool DEBUG = false;
 
   // for easy assignment and flexibility, the 1st is for starting times, 2nd is for shut off time
@@ -404,7 +369,7 @@ void scheduleManager(void *parameter){
           
           // In theory, these data would only be adjusted very rarely, so to save memory and less time
           // compairing what changes, the code is kept simple and straight forward.
-          for (int i =0; i<NUMBER_OF_DEVICES; i++){
+          for (int i =0; i<6; i++){
             // update enableTemplate
             if (doc["data"][i]["status"].as<int>())
               enableTemplate[i] = true;
@@ -532,7 +497,7 @@ void scheduleManager(void *parameter){
         triggerEpochs[i][j] = getNextTrigger(secOffset[i][j],scheduleTemplate[j]);
         // Serial.println("");
         // Serial.print("Updated trigger: ");
-        printTriggerTime(triggerEpochs[i][j]);
+        // printTriggerTime(triggerEpochs[i][j]);
       }
       else triggerEpochs[i][j] = MAX_EPOCH_VALUE;
       nextTrigger=MAX_EPOCH_VALUE;
