@@ -4,7 +4,6 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <mutex>
-#include <ESP32Ping.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include "WiFi.h"
@@ -218,7 +217,7 @@ void shiftRegisterDriver(void *parameter){
   // PINOUT MASKS
   // 1st shift register
   const uint8_t  POWER_12_MASK = B10000000;
-  // const uint8_t  POWER_24_MASK = B01000000;
+  const uint8_t  FAN_MASK = B01000000;
   const uint8_t  LIGHT_MASK = B00100000;
   const uint8_t  CO2_MASK = B00010000;
   const uint8_t  PUMP_0_MASK = B00001000;
@@ -235,6 +234,7 @@ void shiftRegisterDriver(void *parameter){
   const uint8_t  RESERVE_FILL = B00000100;
   const uint8_t  RESERVE_STOP = B00001000;
   // flags to keep track of the outputs
+  byte activeDevice = 0;
   byte activeDosing = 0;
   unsigned long deactivateDosing[4] = {0, 0, 0, 0};   // epoch for when pump is done
 
@@ -253,6 +253,10 @@ void shiftRegisterDriver(void *parameter){
   char buf[5];
 
   while(1){
+    if (activeDevice == 0){
+      // turn off if there's no active device
+      registerState[0] = registerState[0] & ~FAN_MASK;
+    }
     if (activeDosing == 0){
       delaytime = portMAX_DELAY;
       // Turns of 12V power
@@ -261,17 +265,31 @@ void shiftRegisterDriver(void *parameter){
     } else delaytime = 100/portTICK_PERIOD_MS;
     // wait at queue, if there's no active dosing, wait indefinitely
     if (xQueueReceive(cmd_queue, (void *)&buf, delaytime) == pdTRUE){
-      Serial.println(buf);
+      // Serial.println(buf);
       if (buf[0] == 'L'){
         // Light command, 0 for off, 1 for on
-        if (buf[1]=='0') registerState[0] =  registerState[0] & ~LIGHT_MASK;
-        if (buf[1]=='1') registerState[0] =  registerState[0] | LIGHT_MASK;
+        if (buf[1]=='0') {
+          registerState[0] =  registerState[0] & ~LIGHT_MASK;
+          activeDevice--;
+        }
+        if (buf[1]=='1')  {
+          registerState[0] = registerState[0] | LIGHT_MASK;
+          registerState[0] = registerState[0] | FAN_MASK;
+          activeDevice++;
+        }
         Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
       }
       if (buf[0] == 'C'){
         // CO2 injection command, 0 for off, 1 for on
-        if (buf[1]=='0') registerState[0] =  registerState[0] & ~CO2_MASK;
-        if (buf[1]=='1') registerState[0] =  registerState[0] | CO2_MASK;
+        if (buf[1]=='0') {
+          registerState[0] =  registerState[0] & ~CO2_MASK;
+          activeDevice--;
+        }
+        if (buf[1]=='1') {
+          registerState[0] =  registerState[0] | CO2_MASK;
+          registerState[0] = registerState[0] | FAN_MASK;
+          activeDevice++;
+        }
         Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
       }
       if (buf[0] == 'V'){
@@ -499,7 +517,6 @@ void scheduleManager(void *parameter){
           snprintf(msg,5,"E");
           break;
       }
-      Serial.println("Sending scheduled cmd");
       if (xQueueSend(cmd_queue, (void *)&msg, 10) != pdTRUE) {
         Serial.println("CMD queue is full");
       }
@@ -507,14 +524,14 @@ void scheduleManager(void *parameter){
       // Update next trigger epoch
       int i = nextIndex/6;
       int j = nextIndex%6;
-      Serial.print("Updating i= ");
-        Serial.print(i);Serial.print(" j=");Serial.println(j);
+      // Serial.print("Updating i= ");
+      //   Serial.print(i);Serial.print(" j=");Serial.println(j);
       if(enableTemplate[j]){
-        Serial.print("Current trigger: ");
+        // Serial.print("Current trigger: ");
         printTriggerTime(nextTrigger);
         triggerEpochs[i][j] = getNextTrigger(secOffset[i][j],scheduleTemplate[j]);
-        Serial.println("");
-        Serial.print("Updated trigger: ");
+        // Serial.println("");
+        // Serial.print("Updated trigger: ");
         printTriggerTime(triggerEpochs[i][j]);
       }
       else triggerEpochs[i][j] = MAX_EPOCH_VALUE;
@@ -569,13 +586,18 @@ void sensorManager(void *parameter){
       xSemaphoreGive(sensorMutex);
     }
     // delay 1 second before repeating
-    vTaskDelay(1000/portTICK_PERIOD_MS);
+    vTaskDelay(10000/portTICK_PERIOD_MS);
   }
   
 
 }
 
+void dnsServerTask(void *parameter){
+  while(1){
+   dnsServer.processNextRequest();
 
+  }
+}
 
 
 // =======================================Web Processors=======================================
@@ -650,6 +672,8 @@ public:
 };
 
 void setupServer(){
+  dnsServer.start(53, "*", WiFi.softAPIP());
+
   // Serves common source files
   server.on("/src/bootstrap.bundle.min.js", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(SPIFFS, "/src/bootstrap.bundle.min.js", "text/javascript");
@@ -732,7 +756,6 @@ void setupServer(){
         }
         File writefile = SPIFFS.open(schedulePath,"w");
         serializeJson(doc,writefile);
-        vTaskDelay(500/portTICK_PERIOD_MS);
         writefile.close();
         xSemaphoreGive(scheduleMutex);
         if (xSemaphoreTake(flagsMutex, portMAX_DELAY)==pdTRUE){
@@ -745,7 +768,6 @@ void setupServer(){
       
       request->redirect("/schedule");
   }).setFilter(ON_AP_FILTER); 
-  dnsServer.start(53, "*", WiFi.softAPIP());
   server.on("/config", HTTP_POST, [](AsyncWebServerRequest *request){
     // For config values
 
@@ -813,7 +835,7 @@ void setup(){
   cmd_queue = xQueueCreate(20,5);
 
   WiFi.mode(WIFI_AP_STA);  /*ESP32 Access point configured*/
-
+  setupServer();
   if (xSemaphoreTake(configMutex,portMAX_DELAY)==pdTRUE){
     readConfig();
     xSemaphoreGive(configMutex);
@@ -834,19 +856,19 @@ void setup(){
   }
   configTime(0, 0, ntpServer);
    
-  // Test Ping
-  bool pingResult = Ping.ping("www.google.com", 3);
-  if (pingResult) Serial.println("Ping successful");
-  else Serial.println("Ping failed");
+  if(!getTime()){
+    ESP.restart();
+  }
+  
 
   xTaskCreatePinnedToCore (sensorManager,"Read sensor values",	2048 , NULL , 1, NULL, app_cpu);
   xTaskCreatePinnedToCore (scheduleManager,"Manage schedules",	4096 , NULL , 1, NULL, app_cpu);
   xTaskCreatePinnedToCore (shiftRegisterDriver,"Drive drivers",	2048 , NULL , 3, NULL, app_cpu);
+  xTaskCreatePinnedToCore (dnsServerTask,"HandLe DNS services",	2048 , NULL , 1, NULL, app_cpu);
 
-  setupServer();
+  
   
 }
  
 void loop(){
-   dnsServer.processNextRequest();
 }
