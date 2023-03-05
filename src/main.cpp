@@ -7,7 +7,6 @@
 #include <ESP32Ping.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
-#include <driver/adc.h>
 #include "WiFi.h"
 #include "ESPAsyncWebServer.h"
 #include "AsyncJson.h"
@@ -15,8 +14,6 @@
 
 #define ONE_WIRE_BUS 5
 #define NUMBER_OF_TEMPERATURE_SENSOR 2
-#define TDS_SENSOR ADC1_CHANNEL_6
-#define NUM_OF_SAMPLE 30
 
 const unsigned long MAX_EPOCH_VALUE = 2147483647; // Maximum value of epoch
 
@@ -26,31 +23,26 @@ const char* wifi_password;
 const char* ap_ssid;
 const char* ap_password;
 int timezone;
-float high_tds;
 float dechlorinator_dose;
 float second_per_ml;
 
 // Flags
 bool scheduleChange = true;
-bool tdsWarning = false;
 byte tankStatus = 0;          
 // Status for tank with
   // 0 for idle
   // 1 for draining
   // 2 for filling
   // 3 for paused (refilling reserved tank)
-  // 4 for halted (high TDS reading in reserved tank)
 byte reserveStatus = 0;
   // 0 for idle
   // 1 for filling
-  // 2 for error
 
 // NTP server
 const char* ntpServer = "pool.ntp.org";
 
 // Sensor readings
 float tempSensorReading[NUMBER_OF_TEMPERATURE_SENSOR];
-float tdsSensorReading;
 
 // Queue handles
 static QueueHandle_t cmd_queue;  // web interface command queue
@@ -60,7 +52,6 @@ static SemaphoreHandle_t scheduleMutex;
 static SemaphoreHandle_t configMutex;
 static SemaphoreHandle_t flagsMutex;
 static SemaphoreHandle_t sensorMutex;
-static SemaphoreHandle_t historyMutex;
 
 // Create AsyncWebServer object on port 80
 AsyncWebServer server(80);
@@ -69,7 +60,6 @@ DNSServer dnsServer;
 // file paths
 const char* schedulePath = "/schedule.json";
 const char* configPath = "/config.json";
-const char* historyPath = "/history.json";
 
 // Set handling task to 1 core
 #if CONFIG_FREERTOS_UNICORE
@@ -118,7 +108,6 @@ void readConfig(){
   ap_password = doc["ap_password"].as<const char* >();
   timezone = atoi(doc["timezone"].as<const char* >());
   // timezone=0;
-  high_tds = atof(doc["high_tds"].as<const char* >());
   dechlorinator_dose = atof(doc["dechlorinator_dose"].as<const char* >());
   second_per_ml =  atof(doc["second_per_ml"].as<const char* >());
  
@@ -431,20 +420,13 @@ void scheduleManager(void *parameter){
             if (xQueueSend(cmd_queue, (void *)&msg, 10) != pdTRUE) {
               Serial.println("CMD queue is full");
             }
-            char test[]="V0";
-            if (xQueueSend(cmd_queue, (void *)&test, 10) != pdTRUE) {
-              Serial.println("CMD queue is full");
-            }
           }
           if (isActive(secOffset[0][1],secOffset[1][1])){
             char msg[]="C1";
             if (xQueueSend(cmd_queue, (void *)&msg, 10) != pdTRUE) {
               Serial.println("CMD queue is full");
             }
-            char test[]="V1";
-            if (xQueueSend(cmd_queue, (void *)&test, 10) != pdTRUE) {
-              Serial.println("CMD queue is full");
-            }
+            
           } 
           // Debug Serialprint
           if (DEBUG){
@@ -468,65 +450,65 @@ void scheduleManager(void *parameter){
         xSemaphoreGive(flagsMutex);
       }
     }
-    // unsigned long currentTime = getTime()+timezone;
-    // if (currentTime>nextTrigger){
-    //   // Get the msg to send
-    //   char msg[5];
-    //   switch (nextIndex)
-    //   {
-    //     case 0:
-    //       snprintf(msg,5,"L1");
-    //       break;
-    //     case 1:
-    //       snprintf(msg,5,"C1");
-    //       break;
-    //     case 2:
-    //       // Send autochange, implement later
-    //       break;
-    //     case 3:
-    //     case 4:
-    //     case 5:
-    //       {int divided = dosage[nextIndex]/10;
-    //       int remainder = dosage[nextIndex]%10;
-    //       snprintf(msg,5,"P%d%d%d",nextIndex-2,divided,remainder);
-    //       break;}
-    //     case 6:
-    //       snprintf(msg,5,"L0");
-    //       break;
-    //     case 7:
-    //       snprintf(msg,5,"L0");
-    //       break;
+    unsigned long currentTime = getTime()+timezone;
+    if (currentTime>nextTrigger){
+      // Get the msg to send
+      char msg[5];
+      switch (nextIndex)
+      {
+        case 0:
+          snprintf(msg,5,"L1");
+          break;
+        case 1:
+          snprintf(msg,5,"C1");
+          break;
+        case 2:
+          // Send autochange, implement later
+          break;
+        case 3:
+        case 4:
+        case 5:
+          {int divided = dosage[nextIndex]/10;
+          int remainder = dosage[nextIndex]%10;
+          snprintf(msg,5,"P%d%d%d",nextIndex-2,divided,remainder);
+          break;}
+        case 6:
+          snprintf(msg,5,"L0");
+          break;
+        case 7:
+          snprintf(msg,5,"L0");
+          break;
        
-    //     default:
-    //       snprintf(msg,5,"E");
-    //       break;
-    //   }
-    //   Serial.print("Sending scheduled cmd");
-    //   if (xQueueSend(cmd_queue, (void *)&msg, 10) != pdTRUE) {
-    //     Serial.println("CMD queue is full");
-    //   }
+        default:
+          snprintf(msg,5,"E");
+          break;
+      }
+      Serial.print("Sending scheduled cmd");
+      if (xQueueSend(cmd_queue, (void *)&msg, 10) != pdTRUE) {
+        Serial.println("CMD queue is full");
+      }
 
-    //   // Update next trigger epoch
-    //   int i = nextIndex/6;
-    //   int j = nextIndex%6;
-    //   if(enableTemplate[j]){
-    //     triggerEpochs[i][j] = getNextTrigger(secOffset[i][j],scheduleTemplate[j]);
-    //   }
-    //   else triggerEpochs[i][j] = MAX_EPOCH_VALUE;
-    //   for (int i = 0; i<2; i++){
-    //     for (int j = 0;j<6;j++){
-    //       if (nextTrigger>triggerEpochs[i][j]){
-    //         nextTrigger = triggerEpochs[i][j];
-    //         nextIndex = i*6+j;
-    //       }
-    //     }
-    //   }
-    // }
-    // else if (nextTrigger-currentTime>60){
-    //   // If the next trigger is more than 1 minutes away, idle and save processing resources
-    //   vTaskDelay(60000/portTICK_PERIOD_MS);
-    // } 
-    // else 
+      // Update next trigger epoch
+      int i = nextIndex/6;
+      int j = nextIndex%6;
+      if(enableTemplate[j]){
+        triggerEpochs[i][j] = getNextTrigger(secOffset[i][j],scheduleTemplate[j]);
+      }
+      else triggerEpochs[i][j] = MAX_EPOCH_VALUE;
+      for (int i = 0; i<2; i++){
+        for (int j = 0;j<6;j++){
+          if (nextTrigger>triggerEpochs[i][j]){
+            nextTrigger = triggerEpochs[i][j];
+            nextIndex = i*6+j;
+          }
+        }
+      }
+    }
+    else if (nextTrigger-currentTime>60){
+      // If the next trigger is more than 1 minutes away, idle and save processing resources
+      vTaskDelay(60000/portTICK_PERIOD_MS);
+    } 
+    else 
     vTaskDelay(1000/portTICK_PERIOD_MS);   
   }
   
@@ -534,11 +516,6 @@ void scheduleManager(void *parameter){
 
 // Reading DS18B20 temperature sensor
 void sensorManager(void *parameter){
-  // Setup for pH sensor
-  adc1_config_width(ADC_WIDTH_BIT_12);
-  adc1_config_channel_atten(TDS_SENSOR,ADC_ATTEN_DB_11);
-  int buffer[NUM_OF_SAMPLE];
-
   // calling variables for temperature sensors
   OneWire oneWire(ONE_WIRE_BUS);
   DallasTemperature sensors(&oneWire);
@@ -564,19 +541,7 @@ void sensorManager(void *parameter){
       for(int i=0;i<numberOfDevices; i++){
         tempSensorReading[i]= sensors.getTempC(sensorAddress[i]);
       }
-      // Get TDS sensor data
-      // for (int i=0;i<NUM_OF_SAMPLE;i++){
-      //   buffer[i] = adc1_get_raw(TDS_SENSOR);
-      //   vTaskDelay(20/portTICK_PERIOD_MS);
-      // }
-      // float averageVoltage = getMedianNum(buffer,NUM_OF_SAMPLE)*3.3/4096.0;
-      // float compensationCoefficient = 1.0+0.02*(26.0-25.0);
-      // //temperature compensation
-      // float compensationVoltage=averageVoltage/compensationCoefficient;
-      // //convert voltage value to tds value
-      // float tdsValue=(133.42*compensationVoltage*compensationVoltage*compensationVoltage - 255.86*compensationVoltage*compensationVoltage + 857.39*compensationVoltage)*0.5;
-      // Serial.print("TDS reading: ");
-      // Serial.println(tdsValue);
+      
       xSemaphoreGive(sensorMutex);
     }
     // delay 1 second before repeating
@@ -710,19 +675,7 @@ void setupServer(){
       json["reserve_status"] = reserveStatus;
       xSemaphoreGive(flagsMutex);
     } else json["status"] = "error";
-    if (xSemaphoreTake(historyMutex,1000/portTICK_RATE_MS)==pdTRUE){
-      File openfile = SPIFFS.open(historyPath, "r"); 
-      DynamicJsonDocument doc(512);
-      DeserializationError err = deserializeJson(doc, openfile);
-      if (err) {
-        Serial.print(F("deserializeJson() failed with code "));
-        Serial.println(err.f_str());
-      }
-      openfile.close();
-      json["reserve_last_full"]=doc["last_fill_epoch"];
-      json["reserve_tsd"]=doc["last_tds_read"];
-      xSemaphoreGive(historyMutex);
-    } else json["status"] = "error";
+    
     
     serializeJson(json, *response);
     request->send(response);
@@ -829,7 +782,6 @@ void setup(){
   configMutex = xSemaphoreCreateMutex();
   flagsMutex = xSemaphoreCreateMutex();
   sensorMutex = xSemaphoreCreateMutex();
-  historyMutex = xSemaphoreCreateMutex();
 
   // Create command data queue
   cmd_queue = xQueueCreate(20,5);

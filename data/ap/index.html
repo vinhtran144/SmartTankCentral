@@ -43,21 +43,13 @@
             </div>
             <div class="card-body">
               <p class="card-text"><span style="font-weight:bold">Pump Status: </span><span id="pump_status"></span></p>
+              <p class="card-text"><span style="font-weight:bold">Reserve Status: </span><span id="reserve_status"></span></p>
               <p class="card-text"><span style="font-weight:bold">Temperature 1: </span><span id="sensor1"></span>&deg;C</p>
               <p class="card-text"><span style="font-weight:bold">Temperature 2: </span><span id="sensor2"></span>&deg;C</p>
               
             </div>
           </div>
-          <div class="card my-5">
-            <div class="card-header">
-              <h5 class="card-title">Reserve status</h5>
-            </div>
-            <div class="card-body">
-              <p class="card-text"><span style="font-weight:bold">Status: </span><span id="reserve_status"></span></p>
-              <p class="card-text"><span style="font-weight:bold">Last fill: </span><span id="reserve_last_full"></span></p>
-              <p class="card-text"><span style="font-weight:bold">Last TDS value: </span><span id="reserve_tsd"></span>ppm</p>
-            </div>
-          </div>
+          
         </div>
         
 </body>
@@ -105,8 +97,6 @@
             return "Idle";
           case 1:
             return "Filling";
-          case 2:
-            return "TDS error";
           default:
             return "NULL"
         }
@@ -115,15 +105,8 @@
         return "NULL"
     }
   }
-  function displayData({local_time, timezone, ip_address, wifi_satus,temp_sensor,pump_status,reserve_status,reserve_last_full,reserve_tsd}){
-    // console.log(local_time);
-    // console.log(timezone);
-    // console.log(wifi_satus);
-    // console.log(temp_sensor);
-    // console.log(pump_status);
-    // console.log(reserve_status);
-    // console.log(reserve_last_full);
-
+  function displayData({local_time, timezone, ip_address, wifi_satus,temp_sensor,pump_status,reserve_status}){
+   
     // Display time
     
     document.getElementById("local_time").innerHTML = convertime(local_time,timezone);
@@ -135,8 +118,6 @@
     // Display tank and reserve status
     document.getElementById("pump_status").innerHTML = getStatus("pump",pump_status);
     document.getElementById("reserve_status").innerHTML = getStatus("reserve",reserve_status);
-    document.getElementById("reserve_last_full").innerHTML = convertime(parseInt(reserve_last_full),timezone);
-    document.getElementById("reserve_tsd").innerHTML = reserve_tsd;
     
     // Add sensors array
     document.getElementById("sensor1").innerHTML = temp_sensor[0].toFixed(2);
