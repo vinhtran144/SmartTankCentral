@@ -32,16 +32,16 @@
           <div class="card-body">
             <p class="card-text"><span style="font-weight:bold">Tank status: </span><span id="tank_status"></span></p>
             <p class="card-text"><span style="font-weight:bold">Reserve status: </span><span id="reserve_status"></span></p>
-            <div class="row my-2">
-              <div class="col-sm pl-2 pr-1">
-                <button type="button" class="btn btn-outline-primary btn-block" id ="drain_button">Start Draining</button>
+            <div class="row my-2"  style="display: none;" id="manual_btn">
+              <div class="col-sm pl-2 pr-1" >
+                <button type="button" class="btn btn-primary btn-block" id ="drain_btn" disabled>Start Draining</button>
               </div>
               <div class="col-sm pr-2 pl-1">
-                <button type="button" class="btn btn-outline-primary btn-block" id ="drain_button">Start Filling</button>
+                <button type="button" class="btn btn-primary btn-block" id ="fill_btn" disabled>Start Filling</button>
               </div>
             </div>
-            <div class="row  my-3">
-              <button type="button" class="btn btn-outline-primary btn-block mx-2"  id ="auto_button">Start Automatic Routine</button>
+            <div class="row  my-3" style="display: none;" id="auto-btn">
+              <button type="button" class="btn btn-primary btn-block mx-2"  id ="auto_btn"  disabled>Start Automatic Routine</button>
             </div>
           </div>
         </div>
@@ -52,14 +52,42 @@
           </div>
           <div class="card-body">
             <div class="form-group">
-              <label for="exampleFormControlSelect1">Example select</label>
-              <select class="form-control" id="exampleFormControlSelect1">
-                <option>1</option>
-                <option>2</option>
-                <option>3</option>
-                <option>4</option>
-                <option>5</option>
+              <select class="form-control" id="pump_select">
+                <option value="0">Pump 0</option>
+                <option value="1">Pump 1</option>
+                <option value="2">Pump 2</option>
+                <option value="3">Pump 3</option>
               </select>
+            </div>
+            <div class="row">
+              <div class="col-sm-7 pr-1">
+                  <select class="form-control" id="dosage"> 
+                    <option class="drop" value="0" selected="">0 ml</option>
+                    <option class="drop" value="1" >1 ml</option>
+                    <option class="drop" value="2" >2 ml</option>
+                    <option class="drop" value="3" >3 ml</option>
+                    <option class="drop" value="4" >4 ml</option>
+                    <option class="drop" value="5" >5 ml</option>
+                    <option class="drop" value="6" >6 ml</option>
+                    <option class="drop" value="7" >7 ml</option>
+                    <option class="drop" value="8" >8 ml</option>
+                    <option class="drop" value="9" >9 ml</option>
+                    <option class="drop" value="10" >10 ml</option>
+                    <option class="drop" value="11" >11 ml</option>
+                    <option class="drop" value="12" >12 ml</option>
+                    <option class="drop" value="13" >13 ml</option>
+                    <option class="drop" value="14" >14 ml</option>
+                    <option class="drop" value="15" >15 ml</option>
+                    <option class="drop" value="16" >16 ml</option>
+                    <option class="drop" value="17" >17 ml</option>
+                    <option class="drop" value="18" >18 ml</option>
+                    <option class="drop" value="19" >19 ml</option>
+                    <option class="drop" value="20" >20 ml</option>
+                  </select>
+              </div>
+              <div class="col-sm pl-0">
+                <button type="button" class="btn btn-primary btn-block mr-3"  id ="run_dose" disabled>Start Dosing</button>
+              </div>
             </div>
           </div>
         </div>
@@ -68,5 +96,18 @@
 </div>
 </div>
 </body>
+<script>
+   setInterval(function ( ) {
+    var xhttp = new XMLHttpRequest();
+    xhttp.onreadystatechange = function() {
+      if (this.readyState == 4 && this.status == 200) {
+        // displayData(JSON.parse(this.responseText));
+        console.log(JSON.parse(this.responseText))
+      }
+    };
+    xhttp.open("GET", "/controls", true);
+    xhttp.send();
+  }, 1000) ;
+</script>
  
 </html>

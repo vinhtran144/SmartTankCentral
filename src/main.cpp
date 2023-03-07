@@ -946,6 +946,27 @@ void setupServer(){
     serializeJson(json, *response);
     request->send(response);
   });
+  // ServesXMLHRequest for manual controls
+  server.on("/controls", HTTP_GET, [](AsyncWebServerRequest *request){
+    AsyncResponseStream *response = request->beginResponseStream("application/json");
+    DynamicJsonDocument json(1024);
+    json["status"] = "ok";
+    if (xSemaphoreTake(flagsMutex,1000/portTICK_RATE_MS)==pdTRUE){
+      json["tank_busy"] = isBusy;
+      xSemaphoreGive(flagsMutex);
+    } else json["status"] = "error";
+    
+    if (xSemaphoreTake(statusMutex,1000/portTICK_RATE_MS)==pdTRUE){
+      json["tank_status"] = tankStatus;
+      json["reserve_status"] = reserveStatus;
+      xSemaphoreGive(statusMutex);
+    } else json["status"] = "error";
+    
+    
+    serializeJson(json, *response);
+    request->send(response);
+  });
+
   // Serves post request from clients on Access Point
   server.on("/form", HTTP_POST, [](AsyncWebServerRequest *request){
     // For forms that update the schedules
