@@ -105,8 +105,7 @@
         return "NULL"
     }
   }
-  function displayData({local_time, timezone, ip_address, wifi_satus,temp_sensor,pump_status,reserve_status}){
-   
+  function displayData({local_time, timezone, ip_address, wifi_satus,temp_sensor,tank_status,reserve_status}){
     // Display time
     
     document.getElementById("local_time").innerHTML = convertime(local_time,timezone);
@@ -116,7 +115,7 @@
     document.getElementById("ip_address").innerHTML = ip_address;
 
     // Display tank and reserve status
-    document.getElementById("pump_status").innerHTML = getStatus("pump",pump_status);
+    document.getElementById("tank_status").innerHTML = getStatus("pump",tank_status);
     document.getElementById("reserve_status").innerHTML = getStatus("reserve",reserve_status);
     
     // Add sensors array
@@ -129,6 +128,7 @@
     xhttp.onreadystatechange = function() {
       if (this.readyState == 4 && this.status == 200) {
         displayData(JSON.parse(this.responseText));
+        // console.log(this.responseText);
       }
     };
     xhttp.open("GET", "/dashboard", true);

@@ -40,8 +40,8 @@
                 <button type="button" class="btn btn-primary btn-block" id ="fill_btn" disabled>Start Filling</button>
               </div>
             </div>
-            <div class="row  my-3" style="display: none;" id="auto-btn">
-              <button type="button" class="btn btn-primary btn-block mx-2"  id ="auto_btn"  disabled>Start Automatic Routine</button>
+            <div class="row  my-3" style="display: none;" id="auto_btn">
+              <button type="button" class="btn btn-primary btn-block mx-2"  id ="run_auto"  disabled>Start Automatic Routine</button>
             </div>
           </div>
         </div>
@@ -52,8 +52,8 @@
           </div>
           <div class="card-body">
             <div class="form-group">
-              <select class="form-control" id="pump_select">
-                <option value="0">Pump 0</option>
+              <select class="form-control" id="pump_select" value="01">
+                <option value="0" selected>Pump 0</option>
                 <option value="1">Pump 1</option>
                 <option value="2">Pump 2</option>
                 <option value="3">Pump 3</option>
@@ -61,17 +61,16 @@
             </div>
             <div class="row">
               <div class="col-sm-7 pr-1">
-                  <select class="form-control" id="dosage"> 
-                    <option class="drop" value="0" selected="">0 ml</option>
-                    <option class="drop" value="1" >1 ml</option>
-                    <option class="drop" value="2" >2 ml</option>
-                    <option class="drop" value="3" >3 ml</option>
-                    <option class="drop" value="4" >4 ml</option>
-                    <option class="drop" value="5" >5 ml</option>
-                    <option class="drop" value="6" >6 ml</option>
-                    <option class="drop" value="7" >7 ml</option>
-                    <option class="drop" value="8" >8 ml</option>
-                    <option class="drop" value="9" >9 ml</option>
+                  <select class="form-control " id="dosage" value="01"> 
+                    <option class="drop" value="01" selected>1 ml</option>
+                    <option class="drop" value="02" >2 ml</option>
+                    <option class="drop" value="03" >3 ml</option>
+                    <option class="drop" value="04" >4 ml</option>
+                    <option class="drop" value="05" >5 ml</option>
+                    <option class="drop" value="06" >6 ml</option>
+                    <option class="drop" value="07" >7 ml</option>
+                    <option class="drop" value="08" >8 ml</option>
+                    <option class="drop" value="09" >9 ml</option>
                     <option class="drop" value="10" >10 ml</option>
                     <option class="drop" value="11" >11 ml</option>
                     <option class="drop" value="12" >12 ml</option>
@@ -97,12 +96,120 @@
 </div>
 </body>
 <script>
-   setInterval(function ( ) {
+  let preTankState=-1; let stateChange=true;
+  function getStatus(type,value){
+    switch (type){
+      case "pump":
+        switch(value){
+          case 0:
+            return "Idle";
+          case 1:
+            return "Draining";
+          case 2:
+            return "Filling";
+          case 3:
+            return "Paused";
+          default:
+            return "NULL"
+        }
+        break;
+      case "reserve":
+      switch(value){
+          case 0:
+            return "Idle";
+          case 1:
+            return "Filling";
+          default:
+            return "NULL"
+        }
+        break;
+      default:
+        return "NULL"
+    }
+  }
+  $("#pump_select").change(function(event){
+    $("#pump_select").attr("value",$(event.target).val());
+  });
+  $("#dosage").change(function(event){
+    $("#dosage").attr("value",$(event.target).val());
+  });
+  function disableAll(){
+    $("#drain_btn").attr("disabled",'');
+    $("#fill_btn").attr("disabled",'');
+    $("#run_auto").attr("disabled",'');
+    $("#run_dose").attr("disabled",'');
+  };
+  function enableAll(){
+    $("#drain_btn").removeAttr("disabled");
+    $("#fill_btn").removeAttr("disabled");
+    $("#run_auto").removeAttr("disabled");
+    $("#run_dose").removeAttr("disabled");
+  };
+  
+  $(".btn").click(function(event){
+    disableAll();
+    const cmdtype = $(event.target).attr("id");
+    let cmd = '';
+    switch (cmdtype){
+      case "drain_btn":
+        cmd = 'M1';
+        break;
+      case "fill_btn":
+        cmd = 'M2'
+        break;
+      case "run_auto": 
+        cmd = 'A1';
+        break;
+      case "run_dose":
+        cmd = 'P'+$("#pump_select").attr("value")+$("#dosage").attr("value");
+        break;
+    }
+    console.log("Sented "+cmd);
+  })
+
+  function displayData({tank_busy,tank_status,reserve_status}){
+    console.log("isbusy: "+tank_busy);
+    (tank_busy)? disableAll() : enableAll();
+    // Display tank and reserve status
+    $("#tank_status").html(getStatus("pump",tank_status));
+    $("#reserve_status").html(getStatus("reserve",reserve_status));
+    if (preTankState != tank_status){
+      stateChange=true;
+      preTankState = tank_status;
+    }
+    if(stateChange){
+      console.log("state changed");
+      stateChange=false;
+      switch (tank_status){
+      case 0:
+        $("#manual_btn").show();
+        $("#auto_btn").show();
+        $("#drain_btn").show();$("#drain_btn").html("Start draining");
+        $("#fill_btn").show();$("#fill_btn").html("Start filling");
+        break;
+      case 1:
+        $("#manual_btn").show();
+        $("#auto_btn").hide();
+        $("#drain_btn").show();$("#drain_btn").html("Stop draining");
+        $("#fill_btn").hide();
+        break;
+      case 2:
+        $("#manual_btn").show();
+        $("#auto_btn").hide();
+        $("#drain_btn").hide();
+        $("#fill_btn").show();$("#fill_btn").html("Stop filling");
+        break;
+      default:
+        break;
+    }
+    }
+    
+  }
+  setInterval(function ( ) {
     var xhttp = new XMLHttpRequest();
     xhttp.onreadystatechange = function() {
       if (this.readyState == 4 && this.status == 200) {
-        // displayData(JSON.parse(this.responseText));
-        console.log(JSON.parse(this.responseText))
+        displayData(JSON.parse(this.responseText));
       }
     };
     xhttp.open("GET", "/controls", true);
