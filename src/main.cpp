@@ -13,7 +13,10 @@
 
 #define ONE_WIRE_BUS 5
 #define NUMBER_OF_TEMPERATURE_SENSOR 2
-
+#define ENABLE_OUTPUT 26
+#define SERIAL_DATA_INPUT  25 // DS
+#define CLOCK_PIN 32 // SHCP
+#define LATCH_PIN 33 // STCP
 const unsigned long MAX_EPOCH_VALUE = 2147483647; // Maximum value of epoch
 
 // Configs data, stored a separated JSON in /data
@@ -25,17 +28,20 @@ int timezone;
 float dechlorinator_dose;
 float second_per_ml;
 
-// Flags
-bool scheduleChange = true;
-byte tankStatus = 0;          
+// Tank status
+static int tankStatus;          
 // Status for tank with
   // 0 for idle
   // 1 for draining
   // 2 for filling
-  // 3 for paused (refilling reserved tank)
-byte reserveStatus = 0;
+static int reserveStatus;
   // 0 for idle
   // 1 for filling
+
+// Flags
+static bool scheduleChange = true; // For schedule manager to know when to update
+static bool isBusy = true;      // Stop chaning valves command while shift register is busy
+
 
 // NTP server
 const char* ntpServer = "pool.ntp.org";
@@ -45,11 +51,13 @@ float tempSensorReading[NUMBER_OF_TEMPERATURE_SENSOR];
 
 // Queue handles
 static QueueHandle_t cmd_queue;  // web interface command queue
+static QueueHandle_t valve_ctrl_queue;
 
 // Mutex handles
 static SemaphoreHandle_t scheduleMutex;
 static SemaphoreHandle_t configMutex;
 static SemaphoreHandle_t flagsMutex;
+static SemaphoreHandle_t statusMutex;
 static SemaphoreHandle_t sensorMutex;
 
 // Create AsyncWebServer object on port 80
@@ -68,30 +76,8 @@ const char* configPath = "/config.json";
 #endif
 
 // =====================================Functions=====================================
-// median filtering algorithm
-int getMedianNum(int bArray[], int iFilterLen){
-  int bTab[iFilterLen];
-  for (byte i = 0; i<iFilterLen; i++)
-  bTab[i] = bArray[i];
-  int i, j, bTemp;
-  for (j = 0; j < iFilterLen - 1; j++) {
-    for (i = 0; i < iFilterLen - j - 1; i++) {
-      if (bTab[i] > bTab[i + 1]) {
-        bTemp = bTab[i];
-        bTab[i] = bTab[i + 1];
-        bTab[i + 1] = bTemp;
-      }
-    }
-  }
-  if ((iFilterLen & 1) > 0){
-    bTemp = bTab[(iFilterLen - 1) / 2];
-  }
-  else {
-    bTemp = (bTab[iFilterLen / 2] + bTab[iFilterLen / 2 - 1]) / 2;
-  }
-  return bTemp;
-}
 
+// Read config files and update global variables
 void readConfig(){
   File openfile = SPIFFS.open(configPath, "r"); 
   DynamicJsonDocument doc(1024);
@@ -112,7 +98,6 @@ void readConfig(){
  
 }
 
-
 // Function that gets current epoch time
 unsigned long getTime() {
   time_t now;
@@ -125,6 +110,7 @@ unsigned long getTime() {
   return now;
 }
 
+// For debug, print epoch in readable format
 void printTriggerTime(unsigned long epoch){
   time_t rawtime = epoch;
   struct tm  ts;
@@ -136,7 +122,7 @@ void printTriggerTime(unsigned long epoch){
   Serial.print(buf);
 }
 
-// Function return trigger epoch
+// Function return trigger next based on schedule epoch
 unsigned long getNextTrigger(int offSet, bool schedule[7]){
   struct tm timeinfo;
   if(!getLocalTime(&timeinfo)){
@@ -185,7 +171,7 @@ unsigned long getNextTrigger(int offSet, bool schedule[7]){
   // }
 }
 
-// Function to check if it's active
+// Function to check if it's active (for light and CO2)
 bool isActive (int startOffset, int stopOffset){
   struct tm timeinfo;
   if(!getLocalTime(&timeinfo)){
@@ -207,19 +193,28 @@ bool isActive (int startOffset, int stopOffset){
     return true;
   else return false;
 }
+
+// Funtion to update the shift register
+void updateRegister(uint8_t data[],int size){
+  for (int i=size-1; i>= 0; i--){
+    shiftOut(SERIAL_DATA_INPUT, CLOCK_PIN, LSBFIRST, data[i]);
+    digitalWrite(LATCH_PIN, HIGH); 
+    digitalWrite(LATCH_PIN, LOW); 
+  }
+}
+
 // =======================================Tasks=======================================
 
-// Task handing commands and drive shift register
+// handing commands and update shift register state
 void shiftRegisterDriver(void *parameter){
+  digitalWrite(ENABLE_OUTPUT, LOW);   //Enable shift register out put
+  
   uint8_t registerState[2] = {B00000000,B00000000};
+  updateRegister(registerState,2);
   Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
 
   // PINOUT MASKS
   // 1st shift register
-  const uint8_t  POWER_12_MASK = B10000000;
-  const uint8_t  FAN_MASK = B01000000;
-  const uint8_t  LIGHT_MASK = B00100000;
-  const uint8_t  CO2_MASK = B00010000;
   const uint8_t  PUMP_0_MASK = B00001000;
   const uint8_t  PUMP_1_MASK = B00000100;
   const uint8_t  PUMP_2_MASK = B00000010;
@@ -232,10 +227,8 @@ void shiftRegisterDriver(void *parameter){
   const uint8_t  STOP_FILL = B00100000;
   const uint8_t  RESERVE_FILL = B00000100;
   const uint8_t  RESERVE_STOP = B00001000;
-  // flags to keep track of the outputs
-  bool lightActive = false;
-  bool co2Active = false;
-  unsigned long deactivateDosing[4] = {0, 0, 0, 0};   // epoch for when pump is done
+  const uint8_t  LIGHT_MASK = B00000010;
+  const uint8_t  CO2_MASK = B00000001;
 
   const int DEACTIVATE_VALVE_MS = 8000;                
   const int MS_PER_ML = second_per_ml*1000;
@@ -243,53 +236,57 @@ void shiftRegisterDriver(void *parameter){
 
   // Start up routine, reseting all the electronic valves
   registerState[1] = RESET_ALL;
+  updateRegister(registerState,2);
   Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
   vTaskDelay(DEACTIVATE_VALVE_MS/portTICK_PERIOD_MS);
   registerState[1] = B00000000;
+  updateRegister(registerState,2);
   Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
 
-  int delaytime = 0;
   char buf[5];
 
   while(1){
-    // wait at queue indefinitely
-    if (!lightActive && !co2Active) {
-      registerState[0] = registerState[0] & ~FAN_MASK;
+    // Check if queue is empty
+    if (!uxQueueMessagesWaiting(cmd_queue)){
+      
+      if (xSemaphoreTake(flagsMutex,portMAX_DELAY)==pdTRUE){
+          isBusy = false;
+          xSemaphoreGive(flagsMutex);
+        }
+      Serial.println("Queue empty");
     }
+    // wait at queue indefinitely
     if (xQueueReceive(cmd_queue, (void *)&buf, portMAX_DELAY) == pdTRUE){
-      // Serial.println(buf);
+      Serial.println(buf);
       if (buf[0] == 'L'){
         // Light command, 0 for off, 1 for on
         if (buf[1]=='0') {
-          registerState[0] =  registerState[0] & ~LIGHT_MASK;
-          lightActive = false;
+          registerState[1] =  registerState[1] & ~LIGHT_MASK;
         }
         if (buf[1]=='1')  {
-          registerState[0] = registerState[0] | LIGHT_MASK;
-          registerState[0] = registerState[0] | FAN_MASK;
-          lightActive = true;
+          registerState[1] = registerState[1] | LIGHT_MASK;
         }
+        updateRegister(registerState,2);
         Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
       }
       if (buf[0] == 'C'){
         // CO2 injection command, 0 for off, 1 for on
         if (buf[1]=='0') {
-          registerState[0] =  registerState[0] & ~CO2_MASK;
-          co2Active = false;
+          registerState[1] =  registerState[1] & ~CO2_MASK;
         }
         if (buf[1]=='1') {
-          registerState[0] =  registerState[0] | CO2_MASK;
-          registerState[0] = registerState[0] | FAN_MASK;
-          co2Active = true;
+          registerState[1] =  registerState[1] | CO2_MASK;
         }
+        updateRegister(registerState,2);
         Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
       }
       if (buf[0] == 'V'){
-        // Start 12V power
-        registerState[0] = registerState[0] | POWER_12_MASK;
-        Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
-        // valves command, 0-start drain, 1-stop drain, 2-start fill, 3-stop drain,
+        // valves command, 0-start drain, 1-stop drain, 2-start fill, 3-stop fill,
         // 4-start fill (reserve), 5-stop fill (reserve)
+        if (xSemaphoreTake(flagsMutex,portMAX_DELAY)==pdTRUE){
+          isBusy = true;
+          xSemaphoreGive(flagsMutex);
+        }
         uint8_t action;
         if (buf[1]=='0') action = START_DRAIN;
         if (buf[1]=='1') action = STOP_DRAIN;
@@ -300,17 +297,19 @@ void shiftRegisterDriver(void *parameter){
 
         // Activate valve
         registerState[1] =  registerState[1] | action;
+        updateRegister(registerState,2);
         Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
         vTaskDelay(DEACTIVATE_VALVE_MS/portTICK_PERIOD_MS);
         registerState[1] =  registerState[1] & ~action;
-        registerState[0] = registerState[0] & ~POWER_12_MASK;
+        updateRegister(registerState,2);
         Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
+        
       }
       if (buf[0] =='D'){
-        
-         // Start 12V power
-        registerState[0] = registerState[0] | POWER_12_MASK;
-        Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
+        if (xSemaphoreTake(flagsMutex,portMAX_DELAY)==pdTRUE){
+          isBusy = true;
+          xSemaphoreGive(flagsMutex);
+        }
         //  Dosing pump command, second character is the index of the pump, 3-4th character is the dose in ml
         uint8_t action;
         if (buf[1]=='0') action = PUMP_0_MASK;
@@ -319,17 +318,20 @@ void shiftRegisterDriver(void *parameter){
         if (buf[1]=='3') action = PUMP_3_MASK;
         int dosage = (buf[2]-48)*10+(buf[3]-48);
         registerState[0] =  registerState[0] | action;
+        updateRegister(registerState,2);
         Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
         vTaskDelay(dosage*MS_PER_ML/portTICK_PERIOD_MS);
         registerState[0] =  registerState[0] & ~action;
-        registerState[0] = registerState[0] & ~POWER_12_MASK;
+        updateRegister(registerState,2);
         Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
+        
       }
     }
     
   }
 }
 
+// Keep track of schedule and send appropriate commands
 void scheduleManager(void *parameter){
   const bool DEBUG = false;
 
@@ -453,6 +455,7 @@ void scheduleManager(void *parameter){
     if (currentTime>nextTrigger){
       // Get the msg to send
       char msg[5];
+      bool sendToCMD = true;
       switch (nextIndex)
       {
         case 0:
@@ -462,7 +465,8 @@ void scheduleManager(void *parameter){
           snprintf(msg,5,"C1");
           break;
         case 2:
-          // Send autochange, implement later
+          snprintf(msg,5,"A1");
+          sendToCMD = false;
           break;
         case 3:
         case 4:
@@ -482,9 +486,16 @@ void scheduleManager(void *parameter){
           snprintf(msg,5,"E");
           break;
       }
-      if (xQueueSend(cmd_queue, (void *)&msg, 10) != pdTRUE) {
-        Serial.println("CMD queue is full");
+      if (sendToCMD){
+        if (xQueueSend(cmd_queue, (void *)&msg, 10) != pdTRUE) {
+          Serial.println("CMD queue is full");
+        }
+      } else {
+        if (xQueueSend(valve_ctrl_queue, (void *)&msg, 10) != pdTRUE) {
+          Serial.println("CMD queue is full");
+        }
       }
+      
 
       // Update next trigger epoch
       int i = nextIndex/6;
@@ -518,6 +529,247 @@ void scheduleManager(void *parameter){
     vTaskDelay(1000/portTICK_PERIOD_MS);   
   }
   
+}
+
+// Decide states of the valves
+void ValvesController(void *parameter){
+  #define TANK_HIGH_SENSOR 36
+  #define TANK_LOW_SENSOR 39
+  #define RESERVE_HIGH_SENSOR 34
+  #define RESERVE_LOW_SENSOR 35
+
+  const bool DEBUG = true;
+
+  const int TANK_HIGH_ACTIVATE = LOW;
+  const int TANK_LOW_ACTIVATE = LOW;
+  const int RESERVE_HIGH_ACTIVATE = HIGH;
+  const int RESERVE_LOW_ACTIVATE = LOW;
+  // Set up pins
+  pinMode(TANK_HIGH_SENSOR,INPUT_PULLUP);
+  pinMode(TANK_LOW_SENSOR,INPUT_PULLUP);
+  pinMode(RESERVE_HIGH_SENSOR,INPUT_PULLUP);
+  pinMode(RESERVE_LOW_SENSOR,INPUT_PULLUP);
+
+  // local flags, keeping track of the actual states of the valves
+  // tankState is desired state, while these flags are the actual state of the valves
+  bool tankFilling = false;
+  bool tankDraining = false;
+  bool reserveFilling = false;
+  bool isAutoChange = false;
+  bool stateChange = false;
+
+  int dosage = dechlorinator_dose;
+  
+  int delayTime = 0;
+  
+
+  while(1){
+    if (tankFilling || tankDraining || reserveFilling || isAutoChange || stateChange){
+      delayTime = 100;
+    } 
+    else {
+      Serial.println("Waiting at queue indefinitely");
+      delayTime = portMAX_DELAY;
+    }
+    char buf[5];
+    if (xQueueReceive(valve_ctrl_queue, (void *)&buf, delayTime) == pdTRUE){
+      // Only need to receive A0/A1 for autochange routine, M1 for manual drain, M2 for manual fill
+      Serial.println(buf);
+      if (buf[0] == 'A'){
+        
+
+        if (xSemaphoreTake(statusMutex,portMAX_DELAY)==pdTRUE){
+          if (buf[1]=='0'){
+            if (tankStatus != 0){
+              // stop any actions, should be inputed from the user
+              stateChange = true;
+              isAutoChange = false;
+              tankStatus = 0;
+            }
+            xSemaphoreGive(statusMutex);
+          }
+          if (buf[1]=='1'){
+              if (tankStatus == 0){
+              // start auto change routine only when tank is idle
+              stateChange = true;
+              isAutoChange = true;
+              tankStatus = 1;
+            }
+            xSemaphoreGive(statusMutex);
+          }
+          
+        }
+      }
+      if (buf[0] == 'M'){
+        stateChange = true;
+        if (xSemaphoreTake(statusMutex,portMAX_DELAY)==pdTRUE){
+          isAutoChange = false; //override auto change routine
+          if (buf[1]=='1'){
+            // drain manual change mode
+            if (tankStatus == 0) tankStatus = 1; //if idle, start draining
+            if (tankStatus == 1) tankStatus = 0; //if draining, go idle
+            if (tankStatus == 2) tankStatus = 0; //if filling, go idle
+          }
+          if (buf[1]=='2'){
+            // fill manual change mode
+            if (tankStatus == 0) tankStatus = 2; //if idle, start filling
+            if (tankStatus == 1) tankStatus = 0; //if draining, go idle
+            if (tankStatus == 2) tankStatus = 0; //if filling, go idle
+          }
+          xSemaphoreGive(statusMutex);
+        }
+      }
+    }
+    if (reserveFilling){
+      // in case the reserve is filling, check when the reserve is full
+      // no other tank activities while reserve is filling
+      int sensorReading = digitalRead(RESERVE_HIGH_SENSOR);
+      if (sensorReading == RESERVE_HIGH_ACTIVATE){
+        if (DEBUG) Serial.println("RESERVE FULL");
+        char msg[]="V5";  //stop reserve fill
+        reserveFilling = false; stateChange = true;
+        if (xQueueSend(cmd_queue, (void *)&msg, 10) != pdTRUE) {
+          Serial.println("CMD queue is full");
+        } 
+        if (xSemaphoreTake(statusMutex,portMAX_DELAY)==pdTRUE){
+          reserveStatus = 0;
+          xSemaphoreGive(statusMutex);
+        }
+
+      }
+    } else {
+      if (stateChange) {
+
+        // attempt to change state
+        if (xSemaphoreTake(statusMutex,1000/portTICK_PERIOD_MS)==pdTRUE){
+          if (!isBusy && !reserveFilling){
+            // Send valves commands only when shift register is not busy and reserve is idle
+            stateChange = false;
+            switch (tankStatus)
+            {
+            case 0:
+              if (tankDraining) {
+                char msg[]="V1";  //stop drain
+                tankDraining = false;
+                if (xQueueSend(cmd_queue, (void *)&msg, 10) != pdTRUE) {
+                  Serial.println("CMD queue is full");
+                }
+              }
+              if (tankFilling) {
+                char msg[]="V3"; // stop fill
+                tankFilling = false;
+                if (xQueueSend(cmd_queue, (void *)&msg, 10) != pdTRUE) {
+                  Serial.println("CMD queue is full");
+                }
+              }
+              break;
+            case 1:
+              if (!tankDraining){
+                Serial.println("Started draining");
+                char msg[]="V0";   //start drain
+                tankDraining = true;
+                if (xQueueSend(cmd_queue, (void *)&msg, 10) != pdTRUE) {
+                  Serial.println("CMD queue is full");
+                }
+              }
+              if (tankFilling) {
+                char msg[]="V3"; // stop fill
+                tankFilling = false;
+                if (xQueueSend(cmd_queue, (void *)&msg, 10) != pdTRUE) {
+                  Serial.println("CMD queue is full");
+                }
+              }
+              break;
+            case 2:
+              if (!tankFilling){
+                char msg[]="V2";   //start fill
+                tankFilling = true;
+                if (xQueueSend(cmd_queue, (void *)&msg, 10) != pdTRUE) {
+                  Serial.println("CMD queue is full");
+                }
+              }
+              if (tankDraining) {
+                char msg[]="V1";  //stop drain
+                tankDraining = false;
+                if (xQueueSend(cmd_queue, (void *)&msg, 10) != pdTRUE) {
+                  Serial.println("CMD queue is full");
+                }
+              }
+              break;
+            default:
+              break;
+            }
+            xSemaphoreGive(statusMutex);
+          } else xSemaphoreGive(statusMutex);
+        }
+      }
+      if (tankDraining) {
+        int sensorReading = digitalRead(TANK_LOW_SENSOR);
+
+        if (sensorReading == TANK_LOW_ACTIVATE){
+          if (DEBUG) Serial.println("TANK LOW");
+          char msg[]="V1";  //stop drain
+          tankDraining = false;
+          if (xQueueSend(cmd_queue, (void *)&msg, 10) != pdTRUE) {
+            Serial.println("CMD queue is full");
+          } 
+          stateChange = true;
+          if (xSemaphoreTake(statusMutex,portMAX_DELAY)==pdTRUE){
+            if (isAutoChange) {
+              tankStatus = 2; //start filling
+              isAutoChange = false;
+            }
+            else tankStatus = 0; //go idle
+            xSemaphoreGive(statusMutex);
+          }
+
+        }
+      }
+      if (tankFilling) {
+        int sensorReading = digitalRead(RESERVE_LOW_SENSOR);
+        if (sensorReading == RESERVE_LOW_ACTIVATE){
+          if (DEBUG) Serial.println("RESERVE LOW");
+          tankFilling = false;
+          stateChange = true;
+          reserveFilling = true;
+          // queue commands
+          char stopMSG[]="V3";  //stop fill
+          if (xQueueSend(cmd_queue, (void *)&stopMSG, 10) != pdTRUE) {
+            Serial.println("CMD queue is full");
+          } 
+          char startMSG[]="V4"; //start fill reserve
+          if (xQueueSend(cmd_queue, (void *)&startMSG, 10) != pdTRUE) {
+            Serial.println("CMD queue is full");
+          } 
+          char doseMSG[5];
+          int divided = dosage/10;
+          int remainder = dosage%10;
+          snprintf(doseMSG,5,"D%d%d%d",0,divided,remainder);
+          if (xQueueSend(cmd_queue, (void *)&doseMSG, 10) != pdTRUE) {
+            Serial.println("CMD queue is full");
+          } 
+          if (xSemaphoreTake(statusMutex,portMAX_DELAY)==pdTRUE){
+            reserveStatus = 1;
+            xSemaphoreGive(statusMutex);
+          }
+        }
+        sensorReading = digitalRead(TANK_HIGH_SENSOR);
+        if (sensorReading == TANK_HIGH_ACTIVATE){
+          if (DEBUG) Serial.println("TANK FULL");
+          char msg[]="V3";  //stop fill
+          tankFilling = false;
+          if (xQueueSend(cmd_queue, (void *)&msg, 10) != pdTRUE) {
+            Serial.println("CMD queue is full");
+          } 
+          stateChange = true;
+          if (xSemaphoreTake(statusMutex,portMAX_DELAY)==pdTRUE){
+            tankStatus = 0; //go idle
+            xSemaphoreGive(statusMutex);
+          }
+        }
+      }
+    }
+  }
 }
 
 // Reading DS18B20 temperature sensor
@@ -557,6 +809,7 @@ void sensorManager(void *parameter){
 
 }
 
+// Manage capture portal
 void dnsServerTask(void *parameter){
   while(1){
    dnsServer.processNextRequest();
@@ -683,17 +936,16 @@ void setupServer(){
       }
       xSemaphoreGive(sensorMutex);
     } else json["status"] = "error";
-    if (xSemaphoreTake(flagsMutex,1000/portTICK_RATE_MS)==pdTRUE){
-      json["pump_status"] = tankStatus;
+    if (xSemaphoreTake(statusMutex,1000/portTICK_RATE_MS)==pdTRUE){
+      json["tank_status"] = tankStatus;
       json["reserve_status"] = reserveStatus;
-      xSemaphoreGive(flagsMutex);
+      xSemaphoreGive(statusMutex);
     } else json["status"] = "error";
     
     
     serializeJson(json, *response);
     request->send(response);
   });
-
   // Serves post request from clients on Access Point
   server.on("/form", HTTP_POST, [](AsyncWebServerRequest *request){
     // For forms that update the schedules
@@ -733,6 +985,7 @@ void setupServer(){
       
       request->redirect("/schedule");
   }).setFilter(ON_AP_FILTER); 
+  // Update configs files
   server.on("/config", HTTP_POST, [](AsyncWebServerRequest *request){
     // For config values
 
@@ -781,6 +1034,13 @@ void setupServer(){
 }
 
 void setup(){
+  // Disable shift register output to avoid garbage output while device is starting
+  pinMode(ENABLE_OUTPUT,OUTPUT);
+  digitalWrite(ENABLE_OUTPUT, HIGH);
+  pinMode(SERIAL_DATA_INPUT,OUTPUT);
+  pinMode(CLOCK_PIN,OUTPUT);
+  pinMode(LATCH_PIN,OUTPUT);
+
   // Serial port for debugging purposes
   Serial.begin(115200);
 
@@ -795,9 +1055,10 @@ void setup(){
   configMutex = xSemaphoreCreateMutex();
   flagsMutex = xSemaphoreCreateMutex();
   sensorMutex = xSemaphoreCreateMutex();
-
-  // Create command data queue
+  statusMutex = xSemaphoreCreateMutex();
+  // Create command data queues
   cmd_queue = xQueueCreate(20,5);
+  valve_ctrl_queue =xQueueCreate(20,5);
 
   WiFi.mode(WIFI_AP_STA);  /*ESP32 Access point configured*/
   setupServer();
@@ -822,6 +1083,7 @@ void setup(){
   configTime(0, 0, ntpServer);
    
   if(!getTime()){
+    // If failed to get local time, restart
     ESP.restart();
   }
   
@@ -829,7 +1091,9 @@ void setup(){
   xTaskCreatePinnedToCore (sensorManager,"Read sensor values",	2048 , NULL , 1, NULL, app_cpu);
   xTaskCreatePinnedToCore (scheduleManager,"Manage schedules",	4096 , NULL , 1, NULL, app_cpu);
   xTaskCreatePinnedToCore (shiftRegisterDriver,"Drive drivers",	2048 , NULL , 3, NULL, app_cpu);
+  xTaskCreatePinnedToCore (ValvesController, "Control valves",	4096 , NULL , 2, NULL, app_cpu);
   xTaskCreatePinnedToCore (dnsServerTask,"HandLe DNS services",	2048 , NULL , 1, NULL, app_cpu);
+
 
   
   

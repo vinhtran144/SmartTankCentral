@@ -2,13 +2,14 @@
 <html>
  
     <head>
-        <script src="src/jquery-3.3.1.min.js"></script>
-        <script src="src/bootstrap.bundle.min.js"></script>
-        <link rel="stylesheet" type="text/css" href="src/bootstrap.min.css">
+        <script src="../src/jquery-3.3.1.min.js"></script>
+        <!-- <script src="../src/bootstrap.bundle.min.js"></script> -->
+        <link rel="stylesheet" type="text/css" href="../src/bootstrap.min.css">
+        <link rel="stylesheet" type="text/css" href="../src/style.css">
         <meta name="viewport" content="initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     </head>
  
-    <body>
+    <body  class="container">
       <ul class="nav justify-content-center"  id="navbar">
         <li class="nav-item">
           <a class="nav-link" href="/">Home</a>
@@ -23,7 +24,47 @@
           <a class="nav-link" href="config">Config</a>
         </li>
       </ul>
- 
+      <div id="content"  class="container justify-content-center pt-5">
+        <div class="card">
+          <div class="card-header">
+            <h5 class="card-title">Tank control</h5>
+          </div>
+          <div class="card-body">
+            <p class="card-text"><span style="font-weight:bold">Tank status: </span><span id="tank_status"></span></p>
+            <p class="card-text"><span style="font-weight:bold">Reserve status: </span><span id="reserve_status"></span></p>
+            <div class="row my-2">
+              <div class="col-sm pl-2 pr-1">
+                <button type="button" class="btn btn-outline-primary btn-block" id ="drain_button">Start Draining</button>
+              </div>
+              <div class="col-sm pr-2 pl-1">
+                <button type="button" class="btn btn-outline-primary btn-block" id ="drain_button">Start Filling</button>
+              </div>
+            </div>
+            <div class="row  my-3">
+              <button type="button" class="btn btn-outline-primary btn-block mx-2"  id ="auto_button">Start Automatic Routine</button>
+            </div>
+          </div>
+        </div>
+        
+        <div class="card my-5">
+          <div class="card-header">
+            <h5 class="card-title">Dosing control</h5>
+          </div>
+          <div class="card-body">
+            <div class="form-group">
+              <label for="exampleFormControlSelect1">Example select</label>
+              <select class="form-control" id="exampleFormControlSelect1">
+                <option>1</option>
+                <option>2</option>
+                <option>3</option>
+                <option>4</option>
+                <option>5</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        
+      </div>
 </div>
 </div>
 </body>
