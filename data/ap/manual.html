@@ -33,14 +33,14 @@
             <p class="card-text"><span style="font-weight:bold">Tank status: </span><span id="tank_status"></span></p>
             <p class="card-text"><span style="font-weight:bold">Reserve status: </span><span id="reserve_status"></span></p>
             <div class="row my-2"  style="display: none;" id="manual_btn">
-              <div class="col-sm pl-2 pr-1" >
+              <div class="col pl-2 pr-1" >
                 <button type="button" class="btn btn-primary btn-block" id ="drain_btn" disabled>Start Draining</button>
               </div>
-              <div class="col-sm pr-2 pl-1">
+              <div class="col pr-2 pl-1">
                 <button type="button" class="btn btn-primary btn-block" id ="fill_btn" disabled>Start Filling</button>
               </div>
             </div>
-            <div class="row  my-3" style="display: none;" id="auto_btn">
+            <div class="row  my-3" style="display: none;" id="auto_btn" >
               <button type="button" class="btn btn-primary btn-block mx-2"  id ="run_auto"  disabled>Start Automatic Routine</button>
             </div>
           </div>
@@ -52,7 +52,7 @@
           </div>
           <div class="card-body">
             <div class="form-group">
-              <select class="form-control" id="pump_select" value="01">
+              <select class="form-control" id="pump_select" value="0">
                 <option value="0" selected>Pump 0</option>
                 <option value="1">Pump 1</option>
                 <option value="2">Pump 2</option>
@@ -60,7 +60,7 @@
               </select>
             </div>
             <div class="row">
-              <div class="col-sm-7 pr-1">
+              <div class="col-7 pr-1">
                   <select class="form-control " id="dosage" value="01"> 
                     <option class="drop" value="01" selected>1 ml</option>
                     <option class="drop" value="02" >2 ml</option>
@@ -84,8 +84,8 @@
                     <option class="drop" value="20" >20 ml</option>
                   </select>
               </div>
-              <div class="col-sm pl-0">
-                <button type="button" class="btn btn-primary btn-block mr-3"  id ="run_dose" disabled>Start Dosing</button>
+              <div class="col pr-3 pl-1">
+                <button type="button" class="btn btn-primary btn-block mr-3"  id ="run_dose" disabled>Run</button>
               </div>
             </div>
           </div>
@@ -96,7 +96,7 @@
 </div>
 </body>
 <script>
-  let preTankState=-1; let stateChange=true;
+  let preTankState=-1; let stateChange=true; let isProcessing = true;
   function getStatus(type,value){
     switch (type){
       case "pump":
@@ -148,28 +148,43 @@
   
   $(".btn").click(function(event){
     disableAll();
+    isProcessing = true;
     const cmdtype = $(event.target).attr("id");
-    let cmd = '';
+    let cmd = ""; type ="";
     switch (cmdtype){
       case "drain_btn":
-        cmd = 'M1';
+        cmd = "M1";
+        type= "valve";
         break;
       case "fill_btn":
-        cmd = 'M2'
+        cmd = "M2"
+        type= "valve";
         break;
       case "run_auto": 
-        cmd = 'A1';
+        cmd = "A1";
+        type= "valve";
         break;
       case "run_dose":
-        cmd = 'P'+$("#pump_select").attr("value")+$("#dosage").attr("value");
+        cmd = "D"+$("#pump_select").attr("value")+$("#dosage").attr("value");
+        type= "dose";
         break;
     }
-    console.log("Sented "+cmd);
+    const query = 'type='+type+'&cmd='+cmd;
+    console.log("Sented "+query);
+    fetch('/command',{
+      method:'post',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+      body: query,
+    });
   })
 
   function displayData({tank_busy,tank_status,reserve_status}){
-    console.log("isbusy: "+tank_busy);
-    (tank_busy)? disableAll() : enableAll();
+    if(isProcessing){
+      isProcessing = false; // give 1 cycle for server to response after sending command
+    } else {
+      (tank_busy)? disableAll() : enableAll();
+    }
+    
     // Display tank and reserve status
     $("#tank_status").html(getStatus("pump",tank_status));
     $("#reserve_status").html(getStatus("reserve",reserve_status));
@@ -178,26 +193,25 @@
       preTankState = tank_status;
     }
     if(stateChange){
-      console.log("state changed");
       stateChange=false;
       switch (tank_status){
       case 0:
         $("#manual_btn").show();
         $("#auto_btn").show();
-        $("#drain_btn").show();$("#drain_btn").html("Start draining");
-        $("#fill_btn").show();$("#fill_btn").html("Start filling");
+        $("#drain_btn").show();$("#drain_btn").html("Start draining");$("#drain_btn").parent().removeClass("col-12");
+        $("#fill_btn").show();$("#fill_btn").html("Start filling");$("#fill_btn").parent().removeClass("col-12");
         break;
       case 1:
         $("#manual_btn").show();
         $("#auto_btn").hide();
-        $("#drain_btn").show();$("#drain_btn").html("Stop draining");
+        $("#drain_btn").show();$("#drain_btn").html("Stop draining");$("#drain_btn").parent().addClass("col-12");
         $("#fill_btn").hide();
         break;
       case 2:
         $("#manual_btn").show();
         $("#auto_btn").hide();
         $("#drain_btn").hide();
-        $("#fill_btn").show();$("#fill_btn").html("Stop filling");
+        $("#fill_btn").show();$("#fill_btn").html("Stop filling");$("#fill_btn").parent().addClass("col-12");
         break;
       default:
         break;

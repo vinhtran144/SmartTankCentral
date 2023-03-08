@@ -606,16 +606,36 @@ void ValvesController(void *parameter){
           isAutoChange = false; //override auto change routine
           if (buf[1]=='1'){
             // drain manual change mode
-            if (tankStatus == 0) tankStatus = 1; //if idle, start draining
-            if (tankStatus == 1) tankStatus = 0; //if draining, go idle
-            if (tankStatus == 2) tankStatus = 0; //if filling, go idle
+            switch (tankStatus){
+              case 0:
+                tankStatus = 1; //if idle, start draining
+                break;
+              case 1:
+              case 2: {
+                tankStatus = 0; //if active, cancel everything and idle
+                break;
+              }
+              default:
+                break;
+            }
+          
           }
           if (buf[1]=='2'){
             // fill manual change mode
-            if (tankStatus == 0) tankStatus = 2; //if idle, start filling
-            if (tankStatus == 1) tankStatus = 0; //if draining, go idle
-            if (tankStatus == 2) tankStatus = 0; //if filling, go idle
+            switch (tankStatus){
+              case 0:
+                tankStatus = 2; //if idle, start filling
+                break;
+              case 1:
+              case 2: {
+                tankStatus = 0; //if active, cancel everything and idle
+                break;
+              }
+              default:
+                break;
+            }
           }
+          Serial.println(tankStatus);
           xSemaphoreGive(statusMutex);
         }
       }
@@ -1006,6 +1026,30 @@ void setupServer(){
       
       request->redirect("/schedule");
   }).setFilter(ON_AP_FILTER); 
+
+  // Dealing with manual commands from client
+  server.on("/command",HTTP_POST,[](AsyncWebServerRequest *request){
+    AsyncWebParameter* type = request->getParam(0);
+      if(type->name() == "type"){
+        // Send the message to the right command queues
+        String cmdType = type->value().c_str();
+        AsyncWebParameter* p = request->getParam(1);
+        char msg[5];
+        strcpy(msg, p->value().c_str());
+        if (cmdType == "valve"){
+          if (xQueueSend(valve_ctrl_queue,(void *)&msg,10) != pdTRUE){
+             Serial.println("CMD queue is full");
+          }
+        }
+        if (cmdType == "dose"){
+          if (xQueueSend(cmd_queue,(void *)&msg,10) != pdTRUE){
+             Serial.println("CMD queue is full");
+          }
+        }
+      }      
+    
+  }).setFilter(ON_AP_FILTER); 
+
   // Update configs files
   server.on("/config", HTTP_POST, [](AsyncWebServerRequest *request){
     // For config values
