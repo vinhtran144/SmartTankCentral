@@ -17,7 +17,6 @@
 #define SERIAL_DATA_INPUT  25 // DS
 #define CLOCK_PIN 32 // SHCP
 #define LATCH_PIN 33 // STCP
-#define DISABLE_RELAY 13
 const unsigned long MAX_EPOCH_VALUE = 2147483647; // Maximum value of epoch
 
 // Configs data, stored a separated JSON in /data
@@ -196,56 +195,61 @@ bool isActive (int startOffset, int stopOffset){
 }
 
 // Funtion to update the shift register
-void updateRegister(uint8_t data[],int size){
-
-  data[0]= ~data[0]; // my relayboard was low triggered, so reverted logic for writing
-  for (int i=size-1; i>= 0; i--){
-    shiftOut(SERIAL_DATA_INPUT, CLOCK_PIN, LSBFIRST, data[i]);
-    digitalWrite(LATCH_PIN, HIGH); 
-    digitalWrite(LATCH_PIN, LOW); 
+void updateRegister(uint8_t data, bool debug){
+  // shift out to the registers
+  digitalWrite(LATCH_PIN, LOW); 
+  shiftOut(SERIAL_DATA_INPUT, CLOCK_PIN, LSBFIRST, data);
+  digitalWrite(LATCH_PIN, HIGH); 
+  digitalWrite(LATCH_PIN, LOW); 
+  
+    
+  if (debug) {
+    Serial.println(data,BIN);
   }
-  data[0]= ~data[0]; // reverse back
 }
 
 // =======================================Tasks=======================================
 
 // handing commands and update shift register state
 void shiftRegisterDriver(void *parameter){
+  #define C02_PIN 27
+  #define LIGHT_PIN 13
+  const bool DEBUG = true;
+
+  pinMode(C02_PIN,OUTPUT); digitalWrite(C02_PIN, LOW);
+  pinMode(LIGHT_PIN,OUTPUT); digitalWrite(LIGHT_PIN, LOW);
+
   digitalWrite(ENABLE_OUTPUT, LOW);   //Enable shift register out put
-  // digitalWrite(DISABLE_RELAY, LOW); 
-  uint8_t registerState[2] = {B00000000,B00000000};
+  uint8_t registerState = B00000000;
   // updateRegister(registerState,2);
   // Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
   
   // PINOUT MASKS
-  // 1st shift register
+  // dosing pump masks
   const uint8_t  PUMP_0_MASK = B00001000;
   const uint8_t  PUMP_1_MASK = B00000100;
   const uint8_t  PUMP_2_MASK = B00000010;
   const uint8_t  PUMP_3_MASK = B00000001;
-  // 2nd shift register
-  const uint8_t  RESET_ALL = B10101000;
-  const uint8_t  START_DRAIN = B01000000;
-  const uint8_t  STOP_DRAIN = B10000000;
-  const uint8_t  START_FILL = B00010000;
-  const uint8_t  STOP_FILL = B00100000;
-  const uint8_t  RESERVE_FILL = B00000100;
-  const uint8_t  RESERVE_STOP = B00001000;
-  const uint8_t  LIGHT_MASK = B00000010;
-  const uint8_t  CO2_MASK = B00000001;
+  // valves mask
+  const uint8_t ACTIVATE_MODE = B10000000;    
+    //  uses to set the mode, with 0 being default state of the valves
+  const uint8_t TANK_DRAIN_MASK = B01000000;
+  const uint8_t TANK_FILL_MASK = B00100000;
+  const uint8_t RESERVE_FILL_MASK = B00010000; 
+  const uint8_t RESET_ALL = B01110000;
+  
 
   const int DEACTIVATE_VALVE_MS = 8000;                
   const int MS_PER_ML = second_per_ml*1000;
   // get MS per ml from config
 
   // Start up routine, reseting all the electronic valves
-  registerState[1] = RESET_ALL;
-  updateRegister(registerState,2);
-  Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
+  registerState = RESET_ALL;
+  updateRegister(registerState,DEBUG);
   vTaskDelay(DEACTIVATE_VALVE_MS/portTICK_PERIOD_MS);
-  registerState[1] = B00000000;
-  updateRegister(registerState,2);
-  Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
+
+  registerState = B00000000;
+  updateRegister(registerState,DEBUG);
 
   char buf[5];
 
@@ -261,28 +265,26 @@ void shiftRegisterDriver(void *parameter){
     }
     // wait at queue indefinitely
     if (xQueueReceive(cmd_queue, (void *)&buf, portMAX_DELAY) == pdTRUE){
-      Serial.println(buf);
+      // Serial.println(buf);
       if (buf[0] == 'L'){
         // Light command, 0 for off, 1 for on
         if (buf[1]=='0') {
-          registerState[1] =  registerState[1] & ~LIGHT_MASK;
+          digitalWrite(LIGHT_PIN, LOW);
         }
         if (buf[1]=='1')  {
-          registerState[1] = registerState[1] | LIGHT_MASK;
+          digitalWrite(LIGHT_PIN, HIGH);
         }
-        updateRegister(registerState,2);
-        Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
+        // updateRegister(registerState,DEBUG);
       }
       if (buf[0] == 'C'){
         // CO2 injection command, 0 for off, 1 for on
         if (buf[1]=='0') {
-          registerState[1] =  registerState[1] & ~CO2_MASK;
+          digitalWrite(C02_PIN, LOW);
         }
         if (buf[1]=='1') {
-          registerState[1] =  registerState[1] | CO2_MASK;
+          digitalWrite(C02_PIN, HIGH);
         }
-        updateRegister(registerState,2);
-        Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
+        // updateRegister(registerState,DEBUG);
       }
       if (buf[0] == 'V'){
         // valves command, 0-start drain, 1-stop drain, 2-start fill, 3-stop fill,
@@ -292,21 +294,19 @@ void shiftRegisterDriver(void *parameter){
           xSemaphoreGive(flagsMutex);
         }
         uint8_t action;
-        if (buf[1]=='0') action = START_DRAIN;
-        if (buf[1]=='1') action = STOP_DRAIN;
-        if (buf[1]=='2') action = START_FILL;
-        if (buf[1]=='3') action = STOP_FILL;
-        if (buf[1]=='4') action = RESERVE_FILL;
-        if (buf[1]=='5') action = RESERVE_STOP;
+        if (buf[1]=='0') action = ACTIVATE_MODE + TANK_DRAIN_MASK;
+        if (buf[1]=='1') action = TANK_DRAIN_MASK;
+        if (buf[1]=='2') action = ACTIVATE_MODE + TANK_FILL_MASK;
+        if (buf[1]=='3') action = TANK_FILL_MASK;
+        if (buf[1]=='4') action = ACTIVATE_MODE + RESERVE_FILL_MASK;
+        if (buf[1]=='5') action = RESERVE_FILL_MASK;
 
         // Activate valve
-        registerState[1] =  registerState[1] | action;
-        updateRegister(registerState,2);
-        Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
+        registerState =  registerState | action;
+        updateRegister(registerState,DEBUG);
         vTaskDelay(DEACTIVATE_VALVE_MS/portTICK_PERIOD_MS);
-        registerState[1] =  registerState[1] & ~action;
-        updateRegister(registerState,2);
-        Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
+        registerState =  registerState & ~action;
+        updateRegister(registerState,DEBUG);
         
       }
       if (buf[0] =='D'){
@@ -321,13 +321,11 @@ void shiftRegisterDriver(void *parameter){
         if (buf[1]=='2') action = PUMP_2_MASK;
         if (buf[1]=='3') action = PUMP_3_MASK;
         int dosage = (buf[2]-48)*10+(buf[3]-48);
-        registerState[0] =  registerState[0] | action;
-        updateRegister(registerState,2);
-        Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
+        registerState =  registerState | action;
+        updateRegister(registerState,DEBUG);
         vTaskDelay(dosage*MS_PER_ML/portTICK_PERIOD_MS);
-        registerState[0] =  registerState[0] & ~action;
-        updateRegister(registerState,2);
-        Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
+        registerState =  registerState & ~action;
+        updateRegister(registerState,DEBUG);
         
       }
     }
@@ -1118,8 +1116,6 @@ void setupServer(){
 
 void setup(){
   // Disable shift register output to avoid garbage output while device is starting
-  // pinMode(DISABLE_RELAY,OUTPUT);
-  // digitalWrite(DISABLE_RELAY, HIGH);
   pinMode(ENABLE_OUTPUT,OUTPUT);
   digitalWrite(ENABLE_OUTPUT, HIGH);
   pinMode(SERIAL_DATA_INPUT,OUTPUT);
