@@ -17,6 +17,7 @@
 #define SERIAL_DATA_INPUT  25 // DS
 #define CLOCK_PIN 32 // SHCP
 #define LATCH_PIN 33 // STCP
+#define DISABLE_RELAY 13
 const unsigned long MAX_EPOCH_VALUE = 2147483647; // Maximum value of epoch
 
 // Configs data, stored a separated JSON in /data
@@ -196,11 +197,14 @@ bool isActive (int startOffset, int stopOffset){
 
 // Funtion to update the shift register
 void updateRegister(uint8_t data[],int size){
+
+  data[0]= ~data[0]; // my relayboard was low triggered, so reverted logic for writing
   for (int i=size-1; i>= 0; i--){
     shiftOut(SERIAL_DATA_INPUT, CLOCK_PIN, LSBFIRST, data[i]);
     digitalWrite(LATCH_PIN, HIGH); 
     digitalWrite(LATCH_PIN, LOW); 
   }
+  data[0]= ~data[0]; // reverse back
 }
 
 // =======================================Tasks=======================================
@@ -208,11 +212,11 @@ void updateRegister(uint8_t data[],int size){
 // handing commands and update shift register state
 void shiftRegisterDriver(void *parameter){
   digitalWrite(ENABLE_OUTPUT, LOW);   //Enable shift register out put
-  
+  // digitalWrite(DISABLE_RELAY, LOW); 
   uint8_t registerState[2] = {B00000000,B00000000};
-  updateRegister(registerState,2);
-  Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
-
+  // updateRegister(registerState,2);
+  // Serial.print(registerState[0],BIN);Serial.print(" ");Serial.println(registerState[1],BIN);
+  
   // PINOUT MASKS
   // 1st shift register
   const uint8_t  PUMP_0_MASK = B00001000;
@@ -685,12 +689,21 @@ void ValvesController(void *parameter){
               break;
             case 1:
               if (!tankDraining){
-                Serial.println("Started draining");
-                char msg[]="V0";   //start drain
-                tankDraining = true;
-                if (xQueueSend(cmd_queue, (void *)&msg, 10) != pdTRUE) {
-                  Serial.println("CMD queue is full");
+                // Read the sensors first before start draining
+                int sensorReading = digitalRead(TANK_LOW_SENSOR);
+
+                if (sensorReading == TANK_LOW_ACTIVATE){
+                  tankStatus = 0; //return to idle if tank is already low
+                  
+                } else {
+                  Serial.println("Started draining");
+                  char msg[]="V0";   //start drain
+                  tankDraining = true;
+                  if (xQueueSend(cmd_queue, (void *)&msg, 10) != pdTRUE) {
+                    Serial.println("CMD queue is full");
+                  }
                 }
+                
               }
               if (tankFilling) {
                 char msg[]="V3"; // stop fill
@@ -702,11 +715,16 @@ void ValvesController(void *parameter){
               break;
             case 2:
               if (!tankFilling){
-                char msg[]="V2";   //start fill
-                tankFilling = true;
-                if (xQueueSend(cmd_queue, (void *)&msg, 10) != pdTRUE) {
-                  Serial.println("CMD queue is full");
-                }
+                  int sensorReading = digitalRead(TANK_HIGH_SENSOR);
+                  if (sensorReading == TANK_HIGH_ACTIVATE){
+                    tankStatus = 0; //return to idle if tank is already full
+                  } else {
+                    char msg[]="V2";   //start fill
+                    tankFilling = true;
+                    if (xQueueSend(cmd_queue, (void *)&msg, 10) != pdTRUE) {
+                      Serial.println("CMD queue is full");
+                    }
+                  }              
               }
               if (tankDraining) {
                 char msg[]="V1";  //stop drain
@@ -1100,6 +1118,8 @@ void setupServer(){
 
 void setup(){
   // Disable shift register output to avoid garbage output while device is starting
+  // pinMode(DISABLE_RELAY,OUTPUT);
+  // digitalWrite(DISABLE_RELAY, HIGH);
   pinMode(ENABLE_OUTPUT,OUTPUT);
   digitalWrite(ENABLE_OUTPUT, HIGH);
   pinMode(SERIAL_DATA_INPUT,OUTPUT);
