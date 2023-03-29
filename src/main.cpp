@@ -130,6 +130,7 @@ unsigned long getNextTrigger(int offSet, bool schedule[7]){
     return(0);
   }
   unsigned long currentDay = getTime();
+  Serial.println(' ');
   char buffer[3];
   strftime(buffer,3,"%u",&timeinfo); int currentWeekday = atoi(buffer);
   strftime(buffer,3,"%H",&timeinfo); const int currentHour = atoi(buffer);
@@ -139,15 +140,16 @@ unsigned long getNextTrigger(int offSet, bool schedule[7]){
   
   currentDay = currentDay - ( currentHour*3600 + currentMinute*60 + currentSecond);
 
+
   // Adjust due to timezone
-  if (currentOffset>86400){
-    currentOffset = currentOffset-86400;
+  if (currentOffset<0){
+    currentOffset = currentOffset+86400;
     currentDay=currentDay-86400;
     currentWeekday--;
     if (currentWeekday==0) currentWeekday = 7;
   } 
-  if (currentOffset<0){
-    currentOffset = currentOffset+86400;
+  if (currentOffset>86400){
+    currentOffset = currentOffset-86400;
     currentDay=currentDay+86400;
     currentWeekday++;
     if (currentWeekday==8) currentWeekday = 1;
@@ -197,7 +199,6 @@ bool isActive (int startOffset, int stopOffset){
 // Funtion to update the shift register
 void updateRegister(uint8_t data, bool debug){
   // shift out to the registers
-  digitalWrite(LATCH_PIN, LOW); 
   shiftOut(SERIAL_DATA_INPUT, CLOCK_PIN, LSBFIRST, data);
   digitalWrite(LATCH_PIN, HIGH); 
   digitalWrite(LATCH_PIN, LOW); 
@@ -214,7 +215,7 @@ void updateRegister(uint8_t data, bool debug){
 void shiftRegisterDriver(void *parameter){
   #define C02_PIN 27
   #define LIGHT_PIN 13
-  const bool DEBUG = true;
+  const bool DEBUG = false;
 
   pinMode(C02_PIN,OUTPUT); digitalWrite(C02_PIN, LOW);
   pinMode(LIGHT_PIN,OUTPUT); digitalWrite(LIGHT_PIN, LOW);
@@ -506,7 +507,7 @@ void scheduleManager(void *parameter){
       //   Serial.print(i);Serial.print(" j=");Serial.println(j);
       if(enableTemplate[j]){
         // Serial.print("Current trigger: ");
-        printTriggerTime(nextTrigger);
+        if (DEBUG) printTriggerTime(nextTrigger);
         triggerEpochs[i][j] = getNextTrigger(secOffset[i][j],scheduleTemplate[j]);
         // Serial.println("");
         // Serial.print("Updated trigger: ");
@@ -540,12 +541,12 @@ void ValvesController(void *parameter){
   #define RESERVE_HIGH_SENSOR 34
   #define RESERVE_LOW_SENSOR 35
 
-  const bool DEBUG = true;
+  const bool DEBUG = false;
 
   const int TANK_HIGH_ACTIVATE = LOW;
   const int TANK_LOW_ACTIVATE = LOW;
   const int RESERVE_HIGH_ACTIVATE = HIGH;
-  const int RESERVE_LOW_ACTIVATE = LOW;
+  const int RESERVE_LOW_ACTIVATE = HIGH;
   // Set up pins
   pinMode(TANK_HIGH_SENSOR,INPUT_PULLUP);
   pinMode(TANK_LOW_SENSOR,INPUT_PULLUP);
@@ -564,13 +565,51 @@ void ValvesController(void *parameter){
   
   int delayTime = 0;
   
+  // startup fill reserve if reserve is low
+  int lowReserveReading = digitalRead(RESERVE_LOW_SENSOR);
+  if (lowReserveReading == RESERVE_LOW_ACTIVATE){
+    if (DEBUG) Serial.println("RESERVE LOW");
+    char startMSG[]="V4"; //start fill reserve
+      if (xQueueSend(cmd_queue, (void *)&startMSG, 10) != pdTRUE) {
+        Serial.println("CMD queue is full");
+    } 
+    char doseMSG[5];
+    int divided = dosage/10;
+    int remainder = dosage%10;
+    snprintf(doseMSG,5,"D%d%d%d",0,divided,remainder);
+    // send dechlorinator dose
+    if (xQueueSend(cmd_queue, (void *)&doseMSG, 10) != pdTRUE) {
+      Serial.println("CMD queue is full");
+    } 
+    if (xSemaphoreTake(statusMutex,portMAX_DELAY)==pdTRUE){
+      reserveStatus = 1;
+      xSemaphoreGive(statusMutex);
+    }
+    int highReserveReading= digitalRead(RESERVE_HIGH_SENSOR);
 
+    // wait while reserve is filling
+    while(highReserveReading!=RESERVE_HIGH_ACTIVATE){
+      vTaskDelay(100/portTICK_PERIOD_MS);
+      highReserveReading= digitalRead(RESERVE_HIGH_SENSOR);
+    }
+    // Once the reserve is filled, stop valve
+    if (DEBUG) Serial.println("RESERVE FULL");
+    char msg[]="V5";  //stop reserve fill
+    reserveFilling = false; stateChange = true;
+    if (xQueueSend(cmd_queue, (void *)&msg, 10) != pdTRUE) {
+      Serial.println("CMD queue is full");
+    } 
+    if (xSemaphoreTake(statusMutex,portMAX_DELAY)==pdTRUE){
+      reserveStatus = 0;
+      xSemaphoreGive(statusMutex);
+    }
+
+  }
   while(1){
     if (tankFilling || tankDraining || reserveFilling || isAutoChange || stateChange){
-      delayTime = 100;
+      delayTime = 100/portTICK_PERIOD_MS;
     } 
     else {
-      Serial.println("Waiting at queue indefinitely");
       delayTime = portMAX_DELAY;
     }
     char buf[5];
